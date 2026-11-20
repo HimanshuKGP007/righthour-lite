@@ -36,7 +36,20 @@ fi
 find . -path ./.venv -prune -o -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null
 rm -rf ~/.streamlit/cache 2>/dev/null
 
-# 5. Start fresh and open the browser.
+# 5. Publish: send your latest changes to GitHub. The live app updates by itself in about a minute.
+#    It skips this step if the code has an error, so a broken version never goes live.
+if [ -d .git ] && [ -n "$(git status --porcelain)" ]; then
+  if .venv/bin/python -m py_compile app.py righthour/*.py 2>/dev/null; then
+    echo "Publishing your changes to the live app..."
+    git add -A && git commit -q -m "Update $(date '+%Y-%m-%d %H:%M')" \
+      && git push -q 2>/dev/null && echo "Published. Live app updates in about a minute." \
+      || echo "Could not publish (offline?). Your local app still works."
+  else
+    echo "Code has an error, so I did NOT publish. Fix it and double-click again."
+  fi
+fi
+
+# 6. Start fresh and open the browser.
 echo "Starting RightHour Lite at http://localhost:$PORT . Close this window to stop it."
 ( sleep 4; open "http://localhost:$PORT" ) &
 exec .venv/bin/python -m streamlit run app.py --server.headless true --server.port $PORT --browser.gatherUsageStats false
