@@ -19,7 +19,6 @@ CHAT_URL = {"Groq": "https://api.groq.com/openai/v1/chat/completions", "Grok": "
 MODELS_URL = {"Groq": "https://api.groq.com/openai/v1/models", "Grok": "https://api.x.ai/v1/models",
               "Claude": "https://api.anthropic.com/v1/models?limit=100"}
 CLAUDE_URL = "https://api.anthropic.com/v1/messages"
-LAST_ERROR: dict = {"text": ""}    # the newest failed call, so the screen can show it instead of hiding it
 _NOT_CHAT = ("whisper", "tts", "guard", "playai", "orpheus", "embed", "image", "imagine", "video", "vision-only", "moderation")
 
 
@@ -31,7 +30,9 @@ def default_provider() -> str:
 
 
 class LLMClient:
-    def __init__(self, provider: str = "Offline", api_key: str | None = None):
+    def __init__(self, provider: str = "Offline", api_key: str | None = None, error_sink: dict | None = None):
+        # error_sink belongs to one browser session, so one visitor never sees another visitor's errors
+        self.sink = error_sink if error_sink is not None else {}
         self.provider = provider if provider in PROVIDERS else "Offline"
         env = KEY_ENV.get(self.provider)
         self.key = ((api_key or (os.environ.get(env) if env else "")) or "").strip()
@@ -59,12 +60,12 @@ class LLMClient:
             with urllib.request.urlopen(req, timeout=45) as resp:
                 return json.load(resp)
         except urllib.error.HTTPError as e:
-            msg = e.read().decode(errors="replace")[:240]
-            LAST_ERROR["text"] = f"{LABEL[self.provider]} error {e.code}: {msg}"
-            raise RuntimeError(LAST_ERROR["text"]) from e
+            msg = re.sub(r"(gsk_|sk-|xai-)[A-Za-z0-9_\-]+", "[key hidden]", e.read().decode(errors="replace")[:160])
+            self.sink["text"] = f"{LABEL[self.provider]} error {e.code}: {msg}"
+            raise RuntimeError(self.sink["text"]) from e
         except (urllib.error.URLError, TimeoutError) as e:
-            LAST_ERROR["text"] = f"{LABEL[self.provider]} could not be reached: {e}"
-            raise RuntimeError(LAST_ERROR["text"]) from e
+            self.sink["text"] = f"{LABEL[self.provider]} could not be reached"
+            raise RuntimeError(self.sink["text"]) from e
 
     def list_models(self) -> list[str]:
         """The models this key can really use right now, asked of the provider itself."""

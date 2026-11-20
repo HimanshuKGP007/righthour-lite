@@ -25,7 +25,6 @@ from righthour import live as LIVE
 from righthour.agents import Context, lakh, parse_tariff, rs, verify_and_learn
 from righthour.audit import AuditLog
 from righthour.graph import resume, start
-from righthour import llm as LLMMOD
 from righthour.llm import KEY_ENV, LABEL, PROVIDERS, LLMClient, default_provider, suggest_models
 from righthour.router import MODELS, PRICES, set_models, set_provider
 from righthour.tariff import N_SLOTS, SLOTS_PER_HOUR, validate_tariff
@@ -166,7 +165,8 @@ if ss.hist is not None:
         d_err = str(e)
 weather, goal = ss.w_weather, ss.w_goal
 ss.provider = ss.w_provider or ss.provider
-LLM = LLMClient(ss.provider, api_key=ss.get(f"key_{ss.provider}") or None)
+ss.setdefault("llm_err", {"text": ""})   # this session's newest AI error
+LLM = LLMClient(ss.provider, api_key=ss.get(f"key_{ss.provider}") or None, error_sink=ss.llm_err)
 set_provider(ss.provider)
 ss.setdefault("models", {})          # the small and large model chosen for each provider
 ss.setdefault("model_lists", {})     # live model lists, asked of each provider with your key
@@ -291,8 +291,8 @@ def model_controls() -> None:
     if ss.get("model_ok"):
         bad = ss.model_ok.startswith("Failed")
         html(f"<div class='rh-note' style='color:var(--{'red' if bad else 'green'});margin-top:6px'>{escape(ss.model_ok)}</div>")
-    elif LLMMOD.LAST_ERROR["text"]:
-        html(f"<div class='rh-note' style='color:var(--red);margin-top:6px'>Last AI call failed: {escape(LLMMOD.LAST_ERROR['text'])}</div>")
+    elif ss.llm_err["text"]:
+        html(f"<div class='rh-note' style='color:var(--red);margin-top:6px'>Last AI call failed: {escape(ss.llm_err['text'])}</div>")
     html(f"<div class='rh-pill live'>{LLM.label}</div><div class='rh-note' style='margin-top:6px'>Numbers never come from the model.</div>")
 
 
