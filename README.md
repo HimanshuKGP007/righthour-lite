@@ -27,10 +27,12 @@ offline templates and parsers, and every log row says which mode ran. Numbers ne
 
 The left menu has one screen per job:
 
-- **Today:** pick the day, the solar forecast and the goal, press **Generate plan**. See the saving, the max demand, the schedule chart, and approve, edit or reject. The work order appears here after approval.
+- **Today:** pick the day, the solar forecast and the goal, press **Generate plan**. See the saving, the max demand and the schedule chart. Write a note, then approve or reject. **Change the plan** lets you set start times and tick **Keep** for machines that must not move; **Update plan** plans again around them. Every decision and note goes to the audit trail. The work order appears here after approval.
 - **Upload data:** meter readings (upload a CSV, or use the steel plant data or the sample), data health, the live feed, the day's production notes, and a new price order (paste it or upload a .txt).
 - **Plant setup:** machines and crew rules, prices and contract, rooftop solar, and the AI model.
-- **Control room:** the agents' design diagram, lit up from the run. Click a box. A panel opens with three tabs: **How it works** (its steps, filled in with this run's numbers), **Run log** (every step it took, with details) and **Controls** (change how it works). Weather, Forecast and Machines have an on/off switch. Forecast, Check and Optimiser have their own settings. Changes apply to the next plan.
+- **Control room:** the agents' design diagram, lit up from the run. Click a box. A panel opens with **Results** (its numbers, charts and steps), **Controls** (every setting of that box) and **Activity** (what it did, in plain words). Every setting in the app can be reached from a box. **Guardrails** are set here: a safety margin under the contract demand, never set a new monthly peak, the most machines moved in a day, and the smallest saving worth a change. The optimiser obeys them and the rule check enforces them.
+
+**Search settings** at the top of the left menu finds any setting (for example "small model", "margin", "solar") and opens its box in the Control room.
 - **Next-day check:** compare the real meter readings with the approved plan, and see the savings history.
 - **History:** every agent step of this run, and the full audit trail.
 

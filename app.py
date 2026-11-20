@@ -65,7 +65,8 @@ ss.setdefault("trigger_plan", False)
 ss.setdefault("provider", default_provider())
 ss.setdefault("notes_ver", 0)
 ss.setdefault("sel_box", "orch")
-ss.setdefault("proc", dict(PROCESS_DEFAULTS))   # how each diagram box works; changed in the Control room
+ss.setdefault("proc", dict(PROCESS_DEFAULTS))
+ss.setdefault("pins", {})      # machines the manager pinned to an hour: {machine id: start hour}   # how each diagram box works; changed in the Control room
 ss.setdefault("scale_mode", True)
 ss.setdefault("live_active", False)       # live mode: the last days of the file are held back and arrive one by one
 ss.setdefault("live_future", [])
@@ -158,7 +159,7 @@ ss.setdefault("w_plan_at", dt.time(18, 0))
 ss.setdefault("w_provider", ss.provider)
 ss.setdefault("pd_for", None)
 for _k in ["w_weather", "w_goal", "w_live", "w_auto_adv", "w_adv_s", "w_auto_plan", "w_plan_at", "w_provider", "w_plan_day",
-           "key_Groq", "key_Grok", "key_Claude", "view_nav"]:
+           "key_Groq", "key_Grok", "key_Claude", "view_nav", "box_tab"]:
     if _k in ss:                       # keep values alive while their widget is drawn on another screen
         ss[_k] = ss[_k]
 
@@ -171,6 +172,8 @@ if ss.hist is not None:
         if ss.pd_for != tag or not (d_range[0] <= ss.get("w_plan_day", d_range[0]) <= d_range[2]):
             ss.w_plan_day, ss.pd_for = _default_day(d_range[1], d_range[2]), tag
         plan_date = ss.w_plan_day
+        if ss.get("pins_for") != plan_date:     # kept machines belong to one day
+            ss.pins, ss.pins_for = {}, plan_date
         has_actuals = D.day_actuals(ss.hist, plan_date) is not None
     except ValueError as e:
         d_err = str(e)
@@ -365,7 +368,7 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
     with st.spinner("Agents working: forecasting, reading the tariff, solving..."):
         try:
             ctx = Context(SITE, ss.tariff, MACH, ss.hist, goal=goal or "Cut tomorrow's bill.", cloudy=WEATHER[weather], plan_date=plan_date,
-                          notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process=dict(ss.proc))
+                          notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process={**ss.proc, "pins": dict(ss.pins)})
             graph, cfg, state, pending = start(ctx)
             ss.run = {"ctx": ctx, "graph": graph, "cfg": cfg, "state": state, "pending": pending, "cfg_version": ss.cfg_version,
                       "proc": dict(ss.proc)}
@@ -383,11 +386,65 @@ def do_resume(value) -> None:
         ss.verify = None
 
 
+# ------------------------------------------------------------------ settings search: every control, found by name
+# (what it is, extra words people type, the diagram box that holds it)
+SETTINGS = [("Small AI model", "model llm small t1 groq claude grok key provider", "router"),
+            ("Large AI model", "model llm large t2 groq claude grok key provider", "router"),
+            ("AI provider and key", "api key groq claude grok offline connect test", "router"),
+            ("Guardrails", "guardrail safety rules limits policy", "guard"),
+            ("Safety margin below contract demand", "margin contract demand kva headroom guardrail", "guard"),
+            ("Never set a new monthly peak", "monthly peak max demand guardrail", "guard"),
+            ("Most machines moved in a day", "moves disruption limit guardrail", "guard"),
+            ("Smallest saving worth a change", "minimum saving rupees threshold guardrail", "guard"),
+            ("Contract demand", "contract kva demand charge bill", "bill"),
+            ("Price bands and rates", "tariff price rate peak solar normal band bill", "bill"),
+            ("New price order", "tariff order regulator merc upload paste", "orders"),
+            ("Meter data upload", "upload csv meter data readings file steel sample scale", "meters"),
+            ("Live feed", "live mode release day incoming feed", "meters"),
+            ("Production notes", "notes batch order supervisor grinding", "factory"),
+            ("Machines and time windows", "machines kw hours window earliest latest usual", "factory"),
+            ("Crew rules", "crew rule overlap together relax", "factory"),
+            ("Rooftop solar on or off", "solar pv rooftop kwp latitude longitude", "weather"),
+            ("Solar forecast (clear, cloudy, live)", "weather cloudy clear forecast sun", "weather"),
+            ("Forecast method", "forecast weeks weekday history base load", "forecast"),
+            ("Learned correction", "bias correction learning forecast", "forecast"),
+            ("Data quality limits", "spike power factor check quality", "check"),
+            ("Solver time limit", "optimiser solver time limit seconds", "opt"),
+            ("Goal and day to plan", "goal day date plan orchestrator", "orch"),
+            ("Approve, reject or change the plan", "approve reject edit change keep note decision", "manager"),
+            ("Work order", "work order download csv", "runs"),
+            ("Next-day check", "verify real saving next day check learn", "loop_day"),
+            ("Download the audit trail", "audit record download csv history", "store")]
+
+
+def _open_setting(box: str) -> None:
+    goto("Control room", box)
+    ss.box_tab = "Controls"
+    ss.set_q = ""
+
+
+def settings_search() -> None:
+    q = st.text_input("Search settings", key="set_q", placeholder="Search settings: model, guardrails…", label_visibility="collapsed",
+                      icon=":material/search:")
+    q = (q or "").strip().lower()
+    if not q:
+        return
+    terms = q.split()
+    hits = [x for x in SETTINGS if all(t in (x[0] + " " + x[1]).lower() for t in terms)][:7]
+    with st.container(key="sethits"):
+        if not hits:
+            html("<div class='rh-note'>No setting matches. Try a word like model, solar or margin.</div>")
+        for label, _, box in hits:
+            st.button(label, key=f"hit_{label}", width="stretch", on_click=_open_setting, args=(box,),
+                      help=f"Opens {ARCH.info(box)['title']} in the Control room")
+
+
 # ------------------------------------------------------------------ the left menu
 def sidebar() -> None:
     asking = bool(ss.run and ss.run.get("pending"))
     with st.sidebar:
         html(f"<div class='rh-brand'>{LOGO}<div><div class='n'>RightHour</div><div class='s'>Power bill planner</div></div></div>")
+        settings_search()
         with st.container(key="nav"):
             for name, icon, hint in NAV:
                 on = ss.view == name
@@ -428,7 +485,7 @@ def step_strip(state: dict | None, pending: dict | None, verified: bool) -> None
         ("Learning", "ok" if verified else "wait", "Actual vs expected checked" if verified else "Next-day check"),
     ]
     word = {"done": "Done", "ok": "Done", "alert": "Your turn", "active": "Your turn", "wait": "Waiting"}
-    cells = "".join(f"<li class='{c}'><div class='top'><span class='no'>{i}</span><span class='sw'>{word[c]}</span></div>"
+    cells = "".join(f"<li class='{c}' title='{escape(d)}'><div class='top'><span class='no'>{i}</span><span class='sw'>{word[c]}</span></div>"
                     f"<div class='t'>{t}</div><div class='s'>{d}</div></li>" for i, (t, c, d) in enumerate(items, 1))
     html(f"<ol class='rh-steps' aria-label='Steps for the day'>{cells}</ol>")
 
@@ -943,7 +1000,8 @@ ACTION_WORDS = {"validate_data": "Checked the meter readings", "forecast_load": 
                 "orchestrate": "Planned the next step", "replan": "Tested which rule could flex", "explain": "Wrote the explanation",
                 "relax_rule": "Manager chose a rule to relax", "work_order": "Issued the work order", "reject": "Manager rejected the plan",
                 "verify_savings": "Checked the real saving", "learn": "Learned from the day", "setup_saved": "Settings saved",
-                "data_loaded": "Meter data loaded", "safe_fallback": "Kept the usual schedule", "answer_question": "Answered a question"}
+                "data_loaded": "Meter data loaded", "approve": "Manager approved the plan", "plan_update": "Manager changed the plan",
+                "plan_edit": "Manager approved an edited plan", "safe_fallback": "Kept the usual schedule", "answer_question": "Answered a question"}
 TIER_WORDS = {"T0": "Plain code", "T1": "Small AI model", "T2": "Large AI model", "human": "A person"}
 
 
@@ -1221,15 +1279,18 @@ def box_panel(eid: str, rows: list[dict], astates: dict) -> None:
         if run and run.get("proc", ss.proc) != ss.proc:
             html(f"<div class='rh-alert'><b>{ICONS['alert']}Settings changed.</b> The next plan uses them. "
                  "Press <b>Generate plan</b> to see the effect.</div>")
-        t1, t2, t3 = st.tabs([":material/monitoring: Results", ":material/tune: Controls", ":material/receipt_long: Activity"])
-        with t1:
+        ss.setdefault("box_tab", "Results")
+        tab = st.segmented_control("View", ["Results", "Controls", "Activity"], key="box_tab", label_visibility="collapsed",
+                                   format_func=lambda t: {"Results": ":material/monitoring: Results", "Controls": ":material/tune: Controls",
+                                                          "Activity": ":material/receipt_long: Activity"}[t]) or "Results"
+        if tab == "Results":
             box_results(eid, rows)
-        with t2:
+        elif tab == "Controls":
             _ = CONTROLS[eid]()   # assigned, so Streamlit does not print the return value
             if ss.proc != PROCESS_DEFAULTS and st.button("Back to the standard settings", icon=":material/restart_alt:", key=f"pk_reset_{eid}", type="tertiary"):
                 ss.proc = dict(PROCESS_DEFAULTS)
                 st.rerun()
-        with t3:
+        else:
             box_activity(eid, rows)
 
 
@@ -1276,25 +1337,53 @@ def work_order_csv(st_: dict) -> bytes:
 
 
 def approval_controls(scope: str) -> None:
-    """Approve, reject or edit the plan. Rendered in the Plan tab and in the Manager pane, so each has its own widget keys."""
-    reason = st.text_input("Reason, if you reject", placeholder="Recorded in the audit trail", key=f"reason_{scope}")
+    """Approve, reject or change the plan. Every choice, with the manager's note, goes to the audit trail."""
+    rid = ctx.run_id
+    note = st.text_area("Your note", placeholder="Why you approve, reject or change it. Saved in the audit trail.", height=68, key=f"note_{scope}")
+
+    def record(action: str, detail: dict | None = None) -> None:
+        ss.audit.log(rid, "Plant manager", action, tier="human", mode="human", reason=note.strip() or "no note given", detail=detail or {})
+
     b1, b2 = st.columns(2)
-    if b1.button("Approve plan", type="primary", width="stretch", key=f"approve_{scope}"):
-        do_resume({"action": "approve"})
+    if b1.button("Approve plan", type="primary", icon=":material/check:", width="stretch", key=f"approve_{scope}"):
+        record("approve")
+        do_resume({"action": "approve", "note": note})
         st.rerun()
-    if b2.button("Reject", width="stretch", key=f"reject_{scope}"):
-        do_resume({"action": "reject", "reason": reason or "no reason given"})
+    if b2.button("Reject", icon=":material/close:", width="stretch", key=f"reject_{scope}"):
+        do_resume({"action": "reject", "reason": note.strip() or "no reason given"})
         st.rerun()
-    with st.expander("Edit the plan before approving"):
-        html("<div class='rh-note'>Change any start time. The governance layer checks the edit before it can be approved.</div>")
-        edited = {}
-        for m in state["problem"]["shiftable"]:
-            opts = list(range(0, 24 - int(m["duration_h"]) + 1))
-            edited[m["id"]] = st.selectbox(f"{m['name']} ({m['kw']:.0f} kW, {m['duration_h']:g} h)", opts,
-                                           index=opts.index(state["plan"]["schedule"][m["id"]]),
-                                           format_func=lambda h: f"{h:02d}:00", key=f"edit_{scope}_{ctx.run_id}_{m['id']}")
-        if st.button("Check and approve edited plan", width="stretch", key=f"editgo_{scope}"):
-            do_resume({"action": "edit", "schedule": edited})
+    with st.expander("Change the plan", icon=":material/edit_calendar:"):
+        html("<div class='rh-note'>Set a start time, and tick <b>Keep</b> for any machine that must not change. "
+             "<b>Update plan</b> plans again around what you kept. Your note and changes are saved in the audit trail.</div>")
+        sched = state["plan"]["schedule"]
+        rows_ = [{"Machine": m["name"], "Usual": "new" if m.get("baseline_start_h") is None else f"{m['baseline_start_h']:02d}:00",
+                  "Start": f"{(ss.pins.get(m['id'], sched[m['id']])):02d}:00", "Keep": m["id"] in ss.pins} for m in state["problem"]["shiftable"]]
+        hours = [f"{h:02d}:00" for h in range(24)]
+        ed = st.data_editor(pd.DataFrame(rows_), hide_index=True, width="stretch", key=f"pin_{scope}_{rid}", disabled=["Machine", "Usual"],
+                            column_config={"Start": st.column_config.SelectboxColumn("Start", options=hours, required=True),
+                                           "Keep": st.column_config.CheckboxColumn("Keep", help="This machine must start at this time.")})
+        ids = [m["id"] for m in state["problem"]["shiftable"]]
+        starts = {i: int(r["Start"][:2]) for i, r in zip(ids, ed.to_dict("records"))}
+        keep = {i: starts[i] for i, r in zip(ids, ed.to_dict("records")) if r["Keep"]}
+        c1, c2 = st.columns(2)
+        if c1.button("Update plan", type="primary", icon=":material/refresh:", width="stretch", key=f"update_{scope}",
+                     help="Plan again. Machines you kept stay at their time; the agent moves the rest."):
+            ss.pins = keep
+            record("plan_update", {"kept": {m: f"{h:02d}:00" for m, h in keep.items()}})
+            ss.trigger_plan = True
+            st.rerun()
+        if c2.button("Approve exactly as edited", icon=":material/task_alt:", width="stretch", key=f"editgo_{scope}",
+                     help="Use these start times as they are. The rule check runs first."):
+            record("plan_edit", {"schedule": {m: f"{h:02d}:00" for m, h in starts.items()}})
+            do_resume({"action": "edit", "schedule": starts})
+            st.rerun()
+    if ss.pins:
+        names = {m["id"]: m["name"] for m in state["problem"]["shiftable"]}
+        html("<div class='rh-note' style='margin-top:6px'><b>Kept by you:</b> " + ", ".join(f"{escape(names.get(k, k))} at {h:02d}:00" for k, h in ss.pins.items()) + "</div>")
+        if st.button("Release all kept machines", type="tertiary", key=f"unpin_{scope}"):
+            record("plan_update", {"kept": "released"})
+            ss.pins = {}
+            ss.trigger_plan = True
             st.rerun()
 
 
@@ -1384,10 +1473,9 @@ def plan_tab() -> None:
             html(f"<div class='rh-card panel'><h4>{ICONS['check']}Data loaded</h4><p>Press <b>Generate plan</b>.</p></div>")
         return
     warns = [w["text"] for w in state.get("tariff_issues", []) if w["level"] == "warning"]
-    if warns:
-        html(f"<div class='rh-note' style='margin-bottom:8px'><span class='rh-chip warn'>tariff check</span>{len(warns)} warnings on the active tariff. First: {warns[0]}</div>")
-    html(f"<div class='rh-note' style='margin:2px 0 10px'>Plan for <b>{state['forecast']['weekday']} {state['forecast']['date']}</b>. "
-         f"Base load: {state['forecast']['method']}. Solar: {state['pv']['source']}.</div>")
+    html(f"<div class='rh-meta'><span>Plan for <b>{state['forecast']['weekday']} {state['forecast']['date']}</b></span>"
+         f"<span>Load forecast <b>{state['forecast']['method']}</b></span><span>Solar <b>{escape(str(state['pv']['source']).split('(')[0].strip())}</b></span>"
+         + (f"<span title='{escape(' | '.join(warns))}'><span class='rh-chip warn'>{len(warns)} tariff warnings</span></span>" if warns else "") + "</div>")
     if pending and pending["type"] == "choose_relaxation":
         problem_panel("plan")
     elif state.get("status") == "fallback":
@@ -1468,7 +1556,7 @@ def work_order_card() -> None:
 
 
 def page_today() -> None:
-    page_header("Today's plan", f"{escape(str(SITE['name']))} · {escape(str(ss.tariff['name']))}")
+    page_header("Today's plan", escape(str(SITE['name'])))
     next_step(state if run else None, pending, ss.verify is not None)
     run_controls()
     step_strip(state if run else None, pending, ss.verify is not None)
@@ -1642,17 +1730,15 @@ def ask_answer(q: str) -> str:
 ss.setdefault("chat", [])
 
 
-@st.dialog("Ask RightHour", width="large")
+@st.dialog("Ask RightHour", width="small")
 def ask_dialog() -> None:
-    html(f"<div class='rh-note' style='margin-top:-6px'>Knows the plan, the prices, every decision and every checked saving. "
-         f"{'Answers with the large model, ' + escape(MODELS[ss.provider]['T2']) + '.' if LLM.live else 'Offline: plain code answers status, savings and history. Add an AI key in Plant setup for any question.'}</div>")
+    html(f"<div class='rh-note' style='margin-top:-8px'>{'Large model: ' + escape(MODELS[ss.provider]['T2']) if LLM.live else 'Offline: answers status, savings and history.'}</div>")
     q = None
     if not ss.chat:
-        cols = st.columns(2)
         for i, sug in enumerate(ASK.SUGGESTIONS):
-            if cols[i % 2].button(sug, key=f"sug_{i}", width="stretch"):
+            if st.button(sug, key=f"sug_{i}", width="stretch", type="secondary"):
                 q = sug
-    log = st.container(height=380, border=False, key="chatlog")
+    log = st.container(height=120 if not ss.chat else 300, border=False, key="chatlog")
     with log:
         for m in ss.chat:
             with st.chat_message("user" if m["role"] == "manager" else "assistant", avatar=":material/person:" if m["role"] == "manager" else ":material/bolt:"):

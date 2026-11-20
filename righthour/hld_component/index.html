@@ -1,15 +1,15 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 :root{ --navy:#14284B; --navy-d:#0C1A33; --navy-60:#4D6488; --navy-30:#A7B4CA; --navy-10:#EDF1F6; --navy-05:#F5F7FA;
   --ink:#1B2230; --muted:#5B6474; --rule:#DDE3EC; --red:#B83A2E; --green:#2F7350; --amber:#D9A21B; --amber-t:#8A6414;
   --green-bg:#EAF4EE; --red-bg:#FBEDEB; --amber-bg:#FBF3DE; --ease:cubic-bezier(.16,1,.3,1); }
-html,body{ margin:0; padding:0; background:transparent; font-family:Geist,system-ui,sans-serif; }
+html,body{ margin:0; padding:0; background:transparent; font-family:'IBM Plex Sans',system-ui,sans-serif; }
 #root{ background:#fff; border:1px solid var(--rule); border-radius:14px; padding:14px; box-sizing:border-box; overflow-x:auto; }
 /* ---------- architecture diagram */
 .dg-wrap { background:#fff; border:1px solid var(--rule); border-radius:14px; padding:14px; box-shadow:var(--sh2); overflow-x:auto; }
-svg.dg { width:100%; min-width:820px; height:auto; display:block; font-family: Geist, system-ui, sans-serif; }
+svg.dg { width:100%; min-width:820px; height:auto; display:block; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
 .dg-panel { fill:none; stroke:var(--navy-30); stroke-width:1.2; stroke-dasharray:2 3; } .dg-panel.p2 { fill:var(--navy-05); }
 .dg-pipe { fill:var(--navy-10); stroke:var(--navy-30); stroke-width:1; }
 .dg-pl { font-size:14px; font-weight:650; fill:var(--navy); } .dg-pt { font-size:18px; font-weight:650; fill:var(--navy); }
@@ -20,7 +20,7 @@ svg.dg { width:100%; min-width:820px; height:auto; display:block; font-family: G
 .dg-box.dark rect { fill:var(--navy); } .dg-box.green rect { fill:var(--green-bg); stroke:var(--green); } .dg-box.human rect { stroke:var(--green); stroke-width:1.8; }
 .dg-t { font-size:16.5px; font-weight:650; fill:var(--ink); } .dg-s { font-size:13.5px; fill:var(--muted); }
 .dg-box.dark .dg-t { fill:#fff; } .dg-box.dark .dg-s { fill:#D6DEEC; } .dg-box.green .dg-t { fill:var(--green); }
-.dg-code { font-family:'Geist Mono', monospace; font-size:12px; fill:var(--navy-60); } .dg-box.dark .dg-code { fill:#A7B4CA; }
+.dg-code { font-family:'IBM Plex Mono', monospace; font-size:12px; fill:var(--navy-60); } .dg-box.dark .dg-code { fill:#A7B4CA; }
 .dg-box .bd rect { fill:var(--navy-10); stroke:#fff; stroke-width:2.5; paint-order:stroke; } .dg-box .bd text { font-size:12.5px; font-weight:650; fill:var(--muted); }
 .dg-box.s-ran .bd rect { fill:var(--green-bg); } .dg-box.s-ran .bd text { fill:var(--green); }
 .dg-box.s-ask .bd rect { fill:var(--red-bg); stroke:none; } .dg-box.s-ask .bd text { fill:var(--red); }

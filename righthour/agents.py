@@ -257,6 +257,10 @@ def build_problem(ctx: Context, st: dict, relax: dict | None = None, drop_rule: 
         for m in shiftable:
             if m["id"] == target:
                 m[relax["field"]] = relax["value"]
+    for m in shiftable:                         # machines the manager pinned: they run at exactly that hour
+        h = ((ctx.process or {}).get("pins") or {}).get(m["id"])
+        if h is not None:
+            m["earliest_h"], m["latest_finish_h"] = int(h), int(h) + m["duration_h"]
     no_overlap = [(r["a"], r["b"]) for r in ctx.machines_cfg["rules"] if r["type"] == "no_overlap" and r["id"] != drop_rule]
     return {"base_kw": st["forecast"]["kw"], "pf": st["forecast"]["pf"], "pv_kw": st["pv"]["kw"], "fixed": st["fixed"],
             "shiftable": shiftable, "no_overlap": no_overlap, "tariff": ctx.tariff,

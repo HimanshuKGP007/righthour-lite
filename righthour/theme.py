@@ -9,7 +9,7 @@ from __future__ import annotations
 NAVY, NAVY_DARK, NAVY_60, NAVY_30, NAVY_10 = "#14284B", "#0C1A33", "#4D6488", "#A7B4CA", "#EDF1F6"
 INK, MUTED, RULE = "#1B2230", "#5B6474", "#DDE3EC"
 RED, GREEN, AMBER, AMBER_TEXT = "#B83A2E", "#2F7350", "#D9A21B", "#8A6414"
-FONT = "Geist, Inter, system-ui, sans-serif"
+FONT = "'IBM Plex Sans', Inter, system-ui, sans-serif"
 
 # Drawn icons: one 20px grid, 1.6 stroke, round caps.
 def _svg(body: str, size: int = 18) -> str:
@@ -44,7 +44,7 @@ LOGO = ("<svg class='rh-logo' width='36' height='36' viewBox='0 0 36 36' aria-hi
 
 CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 :root{
   --navy:#14284B; --navy-d:#0C1A33; --navy-60:#4D6488; --navy-30:#A7B4CA; --navy-10:#EDF1F6; --navy-05:#F5F7FA;
   --ink:#1B2230; --muted:#5B6474; --rule:#DDE3EC; --paper:#F6F8FB;
@@ -56,9 +56,9 @@ CSS = """
 }
 html, body, .stApp, .stMarkdown, .stButton button, .stTextArea textarea, .stTextInput input, .stSelectbox, .stRadio, .stTabs,
 .stNumberInput input, [data-testid="stSidebar"] label, [data-testid="stSidebar"] p, [data-testid="stSidebar"] small,
-[data-testid="stFileUploaderDropzone"] small, [data-testid="stFileUploaderDropzone"] button { font-family: Geist, Inter, system-ui, sans-serif; }
+[data-testid="stFileUploaderDropzone"] small, [data-testid="stFileUploaderDropzone"] button { font-family: 'IBM Plex Sans', Inter, system-ui, sans-serif; }
 [data-testid="stIconMaterial"], .material-icons, [class*="material-symbols"] { font-family: "Material Symbols Rounded", "Material Icons" !important; }
-code, pre, .mono { font-family: 'Geist Mono', ui-monospace, monospace; }
+code, pre, .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
 .stApp { background: var(--paper); color: var(--ink); }
 ::selection { background: var(--navy); color: #fff; }
 * { scrollbar-width: thin; scrollbar-color: var(--navy-30) transparent; }
@@ -160,7 +160,7 @@ p { text-wrap: pretty; }
 .rh-log td { border-bottom:1px solid var(--navy-10); padding:9px 12px; vertical-align:top; color:var(--ink); line-height:1.45; }
 .rh-log tr:last-child td { border-bottom:0; } .rh-log tbody tr:hover td { background:var(--navy-05); }
 .rh-log td.r, .rh-log th.r { text-align:right; font-variant-numeric:tabular-nums; }
-.rh-log td.m { font-family:'Geist Mono', monospace; font-size:12.5px; color:var(--muted); white-space:nowrap; }
+.rh-log td.m { font-family:'IBM Plex Mono', monospace; font-size:12.5px; color:var(--muted); white-space:nowrap; }
 .rh-mix { display:flex; height:10px; border-radius:5px; overflow:hidden; background:var(--navy-10); margin:8px 0 6px; }
 .rh-mix span { display:block; } .rh-mix .m0 { background:var(--navy-30); } .rh-mix .m1 { background:var(--navy-60); } .rh-mix .m2 { background:var(--navy); } .rh-mix .mh { background:var(--green); }
 
@@ -192,7 +192,7 @@ div[data-testid="stSidebar"] h3 { font-size:12.5px !important; font-weight:600 !
 
 /* ---------- architecture diagram */
 .dg-wrap { background:#fff; border:1px solid var(--rule); border-radius:14px; padding:14px; box-shadow:var(--sh2); overflow-x:auto; }
-svg.dg { width:100%; min-width:820px; height:auto; display:block; font-family: Geist, system-ui, sans-serif; }
+svg.dg { width:100%; min-width:820px; height:auto; display:block; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
 .dg-panel { fill:none; stroke:var(--navy-30); stroke-width:1.2; stroke-dasharray:2 3; } .dg-panel.p2 { fill:var(--navy-05); }
 .dg-pipe { fill:var(--navy-10); stroke:var(--navy-30); stroke-width:1; }
 .dg-pl { font-size:14px; font-weight:650; fill:var(--navy); } .dg-pt { font-size:18px; font-weight:650; fill:var(--navy); }
@@ -203,7 +203,7 @@ svg.dg { width:100%; min-width:820px; height:auto; display:block; font-family: G
 .dg-box.dark rect { fill:var(--navy); } .dg-box.green rect { fill:var(--green-bg); stroke:var(--green); } .dg-box.human rect { stroke:var(--green); stroke-width:1.8; }
 .dg-t { font-size:16.5px; font-weight:650; fill:var(--ink); } .dg-s { font-size:13.5px; fill:var(--muted); }
 .dg-box.dark .dg-t { fill:#fff; } .dg-box.dark .dg-s { fill:#D6DEEC; } .dg-box.green .dg-t { fill:var(--green); }
-.dg-code { font-family:'Geist Mono', monospace; font-size:12px; fill:var(--navy-60); } .dg-box.dark .dg-code { fill:#A7B4CA; }
+.dg-code { font-family:'IBM Plex Mono', monospace; font-size:12px; fill:var(--navy-60); } .dg-box.dark .dg-code { fill:#A7B4CA; }
 .dg-box .bd rect { fill:var(--navy-10); stroke:#fff; stroke-width:2.5; paint-order:stroke; } .dg-box .bd text { font-size:12.5px; font-weight:650; fill:var(--muted); }
 .dg-box.s-ran .bd rect { fill:var(--green-bg); } .dg-box.s-ran .bd text { fill:var(--green); }
 .dg-box.s-ask .bd rect { fill:var(--red-bg); stroke:none; } .dg-box.s-ask .bd text { fill:var(--red); }
@@ -228,7 +228,7 @@ svg.dg { width:100%; min-width:820px; height:auto; display:block; font-family: G
 .rh-tiny td, .rh-tiny th { padding:5px 4px; border-bottom:1px solid var(--navy-10); text-align:left; vertical-align:top; }
 .rh-tiny th { color:var(--muted); font-weight:600; font-size:11.5px; }
 .rh-tiny td.r, .rh-tiny th.r { text-align:right; font-variant-numeric:tabular-nums; }
-.rh-tiny td.m { font-family:'Geist Mono', monospace; color:var(--muted); white-space:nowrap; }
+.rh-tiny td.m { font-family:'IBM Plex Mono', monospace; color:var(--muted); white-space:nowrap; }
 .rh-tiny tr:last-child td { border-bottom:0; }
 .rh-legend-hld { display:flex; gap:18px; font-size:13.5px; color:var(--muted); align-items:center; margin:0 0 6px; flex-wrap:wrap; }
 [data-testid="stVerticalBlockBorderWrapper"] { background:#fff; border-radius:12px !important; box-shadow:var(--sh1); }
@@ -309,6 +309,45 @@ section[data-testid="stSidebar"] > div { padding-top: .2rem; }
 .rh-sub { font-size:14px; font-weight:650; color:var(--ink); margin:18px 0 8px; }
 .rh-locked { margin-top:14px; padding:12px 16px; background:var(--navy-05); border:1px solid var(--rule); border-radius:10px; font-size:13.5px; color:var(--muted); line-height:1.55; }
 .rh-locked b { color:var(--ink); } .rh-locked ul { margin:4px 0 0; padding-left:18px; }
+/* ---------- control-room polish: one sharp typeface, labels as instrument captions, tighter panels */
+html, body, .stApp { font-size:14.5px; }
+.stApp { --cap: 11.5px; }
+.rh-ph { padding:0 0 14px; } .rh-ph h1 { font-size:24px !important; letter-spacing:-.015em; } .rh-ph p { font-size:14px; margin-top:2px; }
+.rh-panel .cap, .rh-kpis span, .rh-side .h, .rh-kv div, .rh-stat .l, .rh-sub {
+  font-size:var(--cap); text-transform:uppercase; letter-spacing:.07em; font-weight:600; color:var(--muted); }
+.rh-sub { margin:20px 0 10px; }
+.rh-kpis b, .rh-big, .rh-kv b, .rh-stat .v { font-family:'IBM Plex Sans', sans-serif; font-weight:600; font-variant-numeric:tabular-nums; }
+.rh-kpis > div { border-radius:8px; padding:12px 14px 11px; border-color:var(--rule); }
+.rh-kpis span { display:block; margin-top:3px; }
+.rh-big { font-size:40px; letter-spacing:-.02em; }
+.rh-card, .rh-panel, .rh-stat, .rh-log, .rh-empty, [data-testid="stPlotlyChart"], [data-testid="stExpander"] { border-radius:8px !important; }
+[data-testid="stVerticalBlockBorderWrapper"] { border-radius:10px !important; }
+.rh-panel { box-shadow:var(--sh1); }
+.rh-log { font-size:13.5px; } .rh-log th { font-size:var(--cap); text-transform:uppercase; letter-spacing:.06em; }
+.rh-tiny th { text-transform:uppercase; letter-spacing:.06em; }
+.rh-next { padding:10px 16px; font-size:14.5px; border-radius:8px; }
+/* the day's steps: a slim status strip, details on hover */
+.rh-steps { gap:6px; margin-bottom:12px; }
+.rh-steps li { padding:8px 10px 9px; border-radius:8px; border-top-width:3px; }
+.rh-steps .s { display:none; }
+.rh-steps .top { margin-bottom:2px; } .rh-steps .t { font-size:14px; } .rh-steps .no, .rh-steps .sw { font-size:11.5px; text-transform:uppercase; letter-spacing:.06em; }
+.rh-meta { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; font-size:12.5px; color:var(--muted); margin:0 0 12px; }
+.rh-meta b { color:var(--ink); font-weight:600; }
+/* settings search in the left bar */
+.st-key-sethits { gap:2px !important; margin:-4px 0 10px; padding:6px; background:#fff; border:1px solid var(--rule); border-radius:8px; box-shadow:var(--sh2); }
+.st-key-sethits button { justify-content:flex-start; border:0 !important; box-shadow:none !important; background:transparent; min-height:32px; padding:4px 8px; font-weight:500; }
+.st-key-sethits button > div { justify-content:flex-start !important; width:100%; }
+.st-key-sethits button:hover { background:var(--navy-05) !important; }
+/* Ask RightHour: a corner panel, not a full-screen window */
+[data-testid="stDialog"] { background:transparent !important; pointer-events:none; }
+[data-testid="stDialog"] > div { pointer-events:auto; position:fixed !important; right:24px; bottom:90px; top:auto !important; left:auto !important;
+  margin:0 !important; transform:none !important; width:min(440px, calc(100vw - 32px)) !important; max-width:none !important;
+  max-height:min(66vh, 680px); overflow:auto; border-radius:12px; border:1px solid var(--navy-30);
+  box-shadow:0 4px 10px rgba(12,26,51,.10), 0 24px 60px -16px rgba(12,26,51,.45); }
+[data-testid="stDialog"] section[role="dialog"] { position:static !important; width:auto !important; max-width:none !important; margin:0 !important;
+  box-shadow:none !important; border:0 !important; transform:none !important; }
+[data-testid="stDialog"] section[role="dialog"] h2 { font-size:17px !important; }
+@media (max-width: 700px){ [data-testid="stDialog"] > div { right:16px; bottom:84px; } }
 @media (prefers-reduced-motion: reduce){ *, *::before, *::after { animation:none !important; transition:none !important; } }
 </style>
 """
