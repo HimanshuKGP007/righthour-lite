@@ -210,7 +210,9 @@ def parse_note(ctx: Context, note: str, defaults: dict, steps: list) -> dict:
 
 
 # ------------------------------------------------------------------ policy checks (T0, governance)
-def policy_check(problem: dict, schedule: dict[str, int], baseline_peak: float | None = None) -> dict:
+def policy_check(problem: dict, schedule: dict[str, int], baseline_peak: float | None = None, saving_rs: float | None = None) -> dict:
+    """Every rule, checked again in plain code. The manager's guardrails (problem["guard"]) are part of it."""
+    g = {"margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0, **(problem.get("guard") or {})}
     ev = evaluate(problem, schedule)
     checks = []
     for m in problem["shiftable"]:
@@ -218,8 +220,10 @@ def policy_check(problem: dict, schedule: dict[str, int], baseline_peak: float |
         checks.append({"rule": f"{m['name']} inside {hhmm(m['earliest_h'])} to {hhmm(m['latest_finish_h'])}",
                        "ok": m["earliest_h"] <= s and s + m["duration_h"] <= m["latest_finish_h"], "hard": True})
     cd = problem["contract_demand_kva"]
-    checks.append({"rule": f"Max demand within contract demand: {ev['peak_kva']:.0f} of {cd:.0f} kVA",
-                   "ok": ev["peak_kva"] <= cd + 1e-6, "hard": True})
+    lim = cd * (1 - g["margin_pct"] / 100)
+    checks.append({"rule": (f"Max demand within contract demand: {ev['peak_kva']:.0f} of {cd:.0f} kVA" if not g["margin_pct"] else
+                            f"Max demand keeps your {g['margin_pct']:g}% safety margin: {ev['peak_kva']:.0f} of {lim:.0f} kVA (contract {cd:.0f})"),
+                   "ok": ev["peak_kva"] <= lim + 1e-6, "hard": True})
     by_id = {m["id"]: m for m in problem["shiftable"]}
     for a, b in problem.get("no_overlap", []):
         if a in by_id and b in by_id:
@@ -230,7 +234,13 @@ def policy_check(problem: dict, schedule: dict[str, int], baseline_peak: float |
         checks.append({"rule": f"{f['name']} {hhmm(f['start_h'])} to {hhmm(f['end_h'])} untouched", "ok": True, "hard": True})
     mtd = problem["mtd_max_kva"]
     checks.append({"rule": f"Monthly max demand unchanged: {ev['peak_kva']:.0f} kVA against this month's {mtd:.0f} kVA",
-                   "ok": ev["peak_kva"] <= mtd + 1e-6, "hard": False})
+                   "ok": ev["peak_kva"] <= mtd + 1e-6, "hard": bool(g["block_new_peak"])})
+    if g["max_moves"] is not None:
+        moved = sum(1 for m in problem["shiftable"] if m.get("baseline_start_h") is not None and schedule[m["id"]] != m["baseline_start_h"])
+        checks.append({"rule": f"At most {g['max_moves']} machine(s) moved: {moved} moved", "ok": moved <= g["max_moves"], "hard": True})
+    if g["min_saving_rs"] and saving_rs is not None:
+        checks.append({"rule": f"Saving worth the change: {rs(saving_rs)} against your minimum {rs(g['min_saving_rs'])}",
+                       "ok": saving_rs >= g["min_saving_rs"], "hard": True})
     return {"checks": checks, "passed": all(c["ok"] for c in checks if c["hard"]), "eval": ev}
 
 
@@ -250,7 +260,8 @@ def build_problem(ctx: Context, st: dict, relax: dict | None = None, drop_rule: 
     no_overlap = [(r["a"], r["b"]) for r in ctx.machines_cfg["rules"] if r["type"] == "no_overlap" and r["id"] != drop_rule]
     return {"base_kw": st["forecast"]["kw"], "pf": st["forecast"]["pf"], "pv_kw": st["pv"]["kw"], "fixed": st["fixed"],
             "shiftable": shiftable, "no_overlap": no_overlap, "tariff": ctx.tariff,
-            "contract_demand_kva": ctx.site["contract_demand_kva"], "mtd_max_kva": ctx.site["month_to_date_max_kva"]}
+            "contract_demand_kva": ctx.site["contract_demand_kva"], "mtd_max_kva": ctx.site["month_to_date_max_kva"],
+            "guard": {k: {**PROCESS_DEFAULTS, **(ctx.process or {})}[k] for k in GUARD_KEYS}}
 
 
 def baseline_schedule(problem: dict, placed: dict | None = None) -> tuple[dict, bool]:
@@ -298,7 +309,10 @@ def relaxation_options(ctx: Context, st: dict | None = None) -> list[dict]:
 
 # How each box of the diagram works. The Control room changes these per session; each run records the values it used.
 PROCESS_DEFAULTS = {"weeks": 4, "method": "weekday", "use_learning": True, "solar_on": True, "spike_x": 3.0, "pf_min": 0.6,
-                    "time_limit_s": 20, "notes_on": True}
+                    "time_limit_s": 20, "notes_on": True,
+                    # guardrails the manager sets: the optimiser obeys them and the rule check enforces them
+                    "margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0}
+GUARD_KEYS = ("margin_pct", "block_new_peak", "max_moves", "min_saving_rs")
 
 
 def step_goal(ctx: Context, st: dict) -> dict:
@@ -486,10 +500,13 @@ def explain(ctx: Context, st: dict) -> str:
 
 def step_action(ctx: Context, st: dict) -> dict:
     """Policy checks, explanation, and the request for approval."""
-    pol = policy_check(st["problem"], st["plan"]["schedule"])
+    base0 = st["baseline"]
+    sav0 = base0["total_rs"] - st["plan"]["total_rs"] if base0["feasible"] else None
+    pol = policy_check(st["problem"], st["plan"]["schedule"], saving_rs=sav0)
     ctx.log(st["steps"], "Governance", "policy_check", detail={"passed": pol["passed"], "checks": pol["checks"]})
     if not pol["passed"]:
-        return {"status": "fallback", "policy": pol, "note": "Policy check failed, so the current schedule is kept."}
+        failed = "; ".join(c["rule"] for c in pol["checks"] if c["hard"] and not c["ok"])
+        return {"status": "fallback", "policy": pol, "note": f"A guardrail failed ({failed}), so the usual schedule is kept."}
     st = {**st, "policy": pol}
     text = explain(ctx, st)
     base = st["baseline"]

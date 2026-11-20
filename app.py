@@ -573,8 +573,8 @@ def step_rows(actions: set[str], rows: list[dict]) -> None:
     mine = [r for r in rows if r["action"] in actions]
     if not mine:
         return
-    body = "".join(f"<tr><td class='m'>{r['ts'][11:]}</td><td>{chip(r['tier'])}</td><td><b>{escape(str(r['action']))}</b></td><td>{escape(str(r['reason']))}</td><td>{escape(str(r['mode']))}</td></tr>" for r in mine)
-    html(f"<table class='rh-log'><thead><tr><th>Time</th><th>Tier</th><th>Step</th><th>Why</th><th>Mode</th></tr></thead><tbody>{body}</tbody></table>")
+    body = "".join(f"<tr><td class='m'>{r['ts'][11:19]}</td><td>{TIER_WORDS.get(r['tier'], r['tier'])}</td><td><b>{escape(words(r['action']))}</b></td><td>{escape(str(r['reason']))}</td></tr>" for r in mine)
+    html(f"<table class='rh-log'><thead><tr><th>Time</th><th>Done by</th><th>What happened</th><th>Why</th></tr></thead><tbody>{body}</tbody></table>")
 
 
 def need_run(what: str) -> bool:
@@ -584,68 +584,41 @@ def need_run(what: str) -> bool:
     return True
 
 
-# ---- meters: the data source and the live feed
-def pane_meters(rows) -> None:
-    h = ss.hist
-    if h is not None:
-        f = LIVE.describe_feed(h)
-        html(f"<div class='rh-stats'><div class='rh-stat'><div class='v'>{f['n_rows']:,}</div><div class='l'>15-minute readings loaded</div></div>"
-             f"<div class='rh-stat'><div class='v'>{f['n_full_days']}</div><div class='l'>complete days</div></div>"
-             f"<div class='rh-stat'><div class='v' style='font-size:20px'>{str(f['last_ts'])[:16]}</div><div class='l'>latest reading</div></div></div>")
-        html(f"<div class='rh-note'>{h.attrs.get('source', '')}</div>")
-        for i in D.validate_load(h):
-            html(f"<div class='rh-note'><span class='rh-chip {'ok' if i['level'] == 'ok' else 'warn'}'>{i['level']}</span>{i['text']}</div>")
-    st.markdown("**Choose the data**")
-    auto = st.toggle("Auto-scale the load to the demo site", value=ss.scale_mode, key="scale_toggle",
+def meter_controls(p: str) -> None:
+    """Load meter data: upload a CSV, or use the steel plant data or the sample. Used on Upload data and in the Control room."""
+    up = st.file_uploader("Upload a meter CSV", type=["csv"], key=f"{p}_up",
+                          help="Same columns as the UCI steel dataset: date, Usage_kWh, Lagging_Current_Power_Factor.")
+    auto = st.toggle("Scale the load to this plant's size", value=ss.scale_mode, key=f"{p}_scale",
                      help="The UCI plant is smaller than the demo site. Scaling keeps its real shape at the site's size.")
-    ss.scale_mode = auto
-    scale = None if auto else st.number_input("Scale factor (x)", 0.5, 10.0, 3.0, 0.5, key="scale_x")
-    c1, c2 = st.columns(2)
-    if STEEL_FILE.exists() and c1.button("Use the steel industry data", width="stretch", help="Steel_industry_data.csv (UCI, DAEWOO Steel). The default."):
-        ss.hist = D.load_uci_csv(STEEL_FILE, scale)
-        ss.live_active = False
-        reset_run()
-        ss.autoran = False
-        st.rerun()
-    if c2.button("Use the synthetic sample", width="stretch"):
-        ss.hist = D.synthetic_history()
-        ss.live_active = False
-        reset_run()
-        ss.autoran = False
-        st.rerun()
-    up = st.file_uploader("Or upload your own meter CSV", type=["csv"], help="Same columns as the UCI steel dataset: date, Usage_kWh, Lagging_Current_Power_Factor.")
-    if up is not None and st.button("Load my CSV", width="stretch"):
+    b1, b2, b3 = st.columns(3)
+    choice = None
+    if b1.button("Load my CSV", type="primary", width="stretch", disabled=up is None, key=f"{p}_load"):
+        choice = "upload"
+    if b2.button("Steel plant data", width="stretch", disabled=not STEEL_FILE.exists(), key=f"{p}_steel",
+                 help="Steel_industry_data.csv (UCI, DAEWOO Steel). The default."):
+        choice = "steel"
+    if b3.button("Sample data", width="stretch", key=f"{p}_sample", help="A labelled synthetic profile."):
+        choice = "sample"
+    if choice:
         try:
-            ss.hist = D.load_uci_csv(up, scale)
-            ss.live_active = False
+            ss.scale_mode = auto
+            scale = None if auto else 3.0
+            ss.hist = {"upload": lambda: D.load_uci_csv(up, scale), "steel": lambda: D.load_uci_csv(STEEL_FILE, scale),
+                       "sample": D.synthetic_history}[choice]()
+            ss.w_live, ss.live_active, ss.live_future, ss.live_base = False, False, [], None
             reset_run()
             ss.autoran = False
+            ss.audit.log("setup", "Plant manager", "data_loaded", tier="human", mode="human",
+                         reason=f"meter data source set to: {choice}", detail={"rows": len(ss.hist)})
             st.rerun()
         except Exception as e:  # noqa: BLE001
-            st.error(f"Could not read that file: {e}")
-    st.markdown("**Live feed**")
-    if ss.live_active:
-        c1, c2 = st.columns([1, 2], vertical_alignment="center")
-        if c1.button("Release the next day now", disabled=not ss.live_future, type="primary", width="stretch"):
-            ss.hist, ss.live_future, day = LIVE.release_next_day(ss.hist, ss.live_future)
-            live_note(f"meter feed delivered {day}")
-            check_approved_plan()
-            ss.trigger_plan = True
-            st.rerun()
-        c2.markdown(f"{len(ss.live_future)} held-back days still to arrive. Or drop a CSV in <span class='mono'>{INCOMING.name}/</span>; it is picked up within seconds.",
-                    unsafe_allow_html=True)
-        for line in ss.live_log:
-            html(f"<div class='rh-note mono'>{line}</div>")
-    else:
-        html("<div class='rh-note'>Turn on <b>Live mode</b> in the sidebar. The last 7 days of the file are held back and arrive one by one, like a real meter feed.</div>")
+            st.error(f"Could not read that file: {e}. Check it has the columns date, Usage_kWh and Lagging_Current_Power_Factor.")
+    if p != "d":
+        st.markdown("**Live feed**")
+        live_controls()
 
 
 # ---- factory systems: the day's notes, the machines, the crew rules
-def pane_factory(rows) -> None:
-    notes_editor()
-    pane_machines()
-
-
 def notes_editor() -> None:
     html(f"<p class='rh-lead'><b>Notes for {plan_date:%A %d %B %Y}.</b> Write what the supervisor would say. "
          f"A <b>Fixed batch</b> must run at its stated hours. A <b>New order</b> is placed by the agent inside the hours you state. "
@@ -769,131 +742,8 @@ def pane_weather(rows) -> None:
     site["rooftop_pv_kwp"] = a.number_input("Rooftop solar (kWp)", 0, 100000, int(site["rooftop_pv_kwp"]), 10, key=f"pv{v}")
     site["latitude"] = b.number_input("Latitude", -90.0, 90.0, float(site["latitude"]), 0.01, key=f"lat{v}")
     site["longitude"] = c.number_input("Longitude", -180.0, 180.0, float(site["longitude"]), 0.01, key=f"lon{v}")
-    if st.button("Save solar settings", type="primary"):
+    if st.button("Save solar settings", type="primary", key=f"pv_save{v}"):
         save_cfg(site=site)
-    if state.get("pv"):
-        fig = go.Figure(go.Scatter(x=[k / SLOTS_PER_HOUR for k in range(N_SLOTS)], y=state["pv"]["kw"], fill="tozeroy", line=dict(color=AMBER, width=2), name="Solar kW"))
-        fig.update_layout(height=200, margin=dict(l=8, r=8, t=8, b=8), paper_bgcolor="#fff", plot_bgcolor="#fff", font=dict(family=FONT, size=12),
-                          xaxis=dict(title="hour", range=[0, 24]), yaxis=dict(title="kW"))
-        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-        html(f"<div class='rh-note'>Source: {state['pv']['source']}</div>")
-
-
-# ---- data pipeline boxes
-def pane_collect(rows) -> None:
-    if need_run("The forecast comes from the run."):
-        return
-    fc = state["forecast"]
-    html(f"<div class='rh-note'>Base load for <b>{fc['weekday']} {fc['date']}</b>: {fc['method']}. Learned correction x{fc['bias']:.3f}.</div>")
-    if st.button("Reset learned correction"):
-        ss.bias = 1.0
-        st.rerun()
-
-
-def pane_check(rows) -> None:
-    if need_run("The quality checks come from the run."):
-        return
-    for i in state.get("data_issues", []):
-        html(f"<div class='rh-note'><span class='rh-chip {'ok' if i['level'] == 'ok' else 'warn'}'>{i['level']}</span>{i['text']}</div>")
-
-
-def pane_store(rows) -> None:
-    df = pd.DataFrame(ss.audit.rows())
-    html(f"<div class='rh-note'>Audit store: <span class='mono'>righthour_audit.sqlite</span>, {len(df)} rows across all runs. Every step of every run is kept here.</div>")
-    if len(df):
-        st.download_button("Download the audit trail (CSV)", df.to_csv(index=False).encode(), "righthour_audit.csv", "text/csv")
-
-
-# ---- agent team
-def pane_orch(rows) -> None:
-    if need_run("The orchestrator's steps come from the run."):
-        return
-    html(f"<div class='rh-note'>Goal: <b>{state.get('goal', '')}</b>. Day: <b>{state['forecast']['date']}</b>. Model: <b>{LLM.label}</b>. Change these on the Today screen.</div>")
-
-
-def pane_price(rows) -> None:
-    t = ss.tariff
-    html("<table class='rh-log'><thead><tr><th>Band</th><th>Hours</th><th class='r'>₹ per kVAh</th></tr></thead><tbody>" + "".join(
-        f"<tr><td>{s['type']}</td><td>{s['start_h']:02d}:00 to {s['end_h']:02d}:00</td><td class='r'>{s['rate']:.2f}</td></tr>" for s in t["slots"])
-         + f"</tbody></table><div class='rh-note' style='margin-top:6px'>Demand charge ₹{t['demand_charge_per_kva_month']} per kVA per month. Edit in the <b>Power bill</b> box.</div>")
-
-
-def pane_forecast(rows) -> None:
-    if need_run("The forecast comes from the run."):
-        return
-    fc, pv = state["forecast"], state["pv"]
-    x = [k / SLOTS_PER_HOUR for k in range(N_SLOTS)]
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=x, y=fc["kw"], name="Base load kW", line=dict(color=NAVY, width=2.4)))
-    fig.add_trace(go.Scatter(x=x, y=pv["kw"], name="Solar kW", line=dict(color=AMBER, width=2), fill="tozeroy", fillcolor="rgba(217,162,27,.12)"))
-    fig.update_layout(height=260, margin=dict(l=8, r=8, t=8, b=8), paper_bgcolor="#fff", plot_bgcolor="#fff", font=dict(family=FONT, size=12),
-                      xaxis=dict(title="hour", range=[0, 24]), yaxis=dict(title="kW"), legend=dict(orientation="h", y=-0.25))
-    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-    html(f"<div class='rh-note'>Base load: {fc['method']}. Solar: {pv['source']}. Learned correction x{ss.bias:.3f}.</div>")
-
-
-def pane_rules(rows) -> None:
-    if need_run("The rules read from your notes come from the run."):
-        return
-    html(read_back(state))
-    html("<div class='rh-note'>Edit the notes in <b>Upload data</b>.</div>")
-
-
-# ---- optimiser, guardrails
-def pane_opt(rows) -> None:
-    if need_run("The schedule comes from the run."):
-        return
-    plan, prob = state["plan"], state["problem"]
-    if plan.get("status") != "optimal":
-        html(f"<div class='rh-card alert'><h4>{ICONS['alert']}No valid schedule</h4><p>{plan.get('reason', '')}</p></div>")
-    else:
-        sched = plan["schedule"]
-        def usual(m):
-            b = m.get("baseline_start_h")
-            return "" if b is None else "%02d:00" % int(b)
-        body = "".join(f"<tr><td>{escape(str(m['name']))}</td><td class='r'>{m['kw']:.0f}</td><td>{m['earliest_h']:02d}:00 to {int(m['latest_finish_h']):02d}:00</td>"
-                       f"<td>{usual(m)}</td><td><b>{sched[m['id']]:02d}:00</b></td></tr>" for m in prob["shiftable"])
-        html(f"<table class='rh-log'><thead><tr><th>Machine</th><th class='r'>kW</th><th>Allowed window</th><th>Usual start</th><th>Planned start</th></tr></thead><tbody>{body}</tbody></table>"
-             f"<div class='rh-note' style='margin-top:6px'>{plan.get('solver', '')}. Cost for the day {rs(plan['total_rs'])}, peak {plan['peak_kva']:.0f} kVA. "
-             "The solver decides the schedule; no language model is involved.</div>")
-
-
-def pane_guard(rows) -> None:
-    if need_run("The rule checks come from the run."):
-        return
-    checks = state.get("policy", {}).get("checks", [])
-    html("".join(f"<p style='margin:4px 0'><span class='rh-chip {'ok' if c['ok'] else ('bad' if c['hard'] else 'warn')}'>{'pass' if c['ok'] else ('fail' if c['hard'] else 'note')}</span>{c['rule']}</p>" for c in checks)
-         or "<div class='rh-note'>No plan to check yet.</div>")
-    html(f"<div class='rh-note' style='margin-top:8px'>Rules that can never be relaxed: " + "; ".join(r["text"] for r in MACH["rules"] if r["hard"]) + ".</div>")
-
-
-# ---- the manager
-def pane_manager(rows) -> None:
-    if need_run("Approval needs a plan."):
-        return
-    if pending and pending["type"] == "choose_relaxation":
-        problem_panel("pane")
-    elif pending and pending["type"] == "approval":
-        approval_controls("pane")
-    else:
-        html(f"<div class='rh-note'>Status: <b>{state.get('status', '')}</b>. Nothing is waiting for you.</div>")
-
-
-def pane_runs(rows) -> None:
-    if not ss.approved:
-        html("<div class='rh-note'>No approved plan yet. Approve one in the <b>Manager decides</b> box.</div>")
-        return
-    ast = ss.approved[1]
-    html(f"<div class='rh-note'>Work order for <b>{ast['forecast']['date']}</b>. RightHour never switches equipment; people do.</div>")
-    st.dataframe(pd.read_csv(io.BytesIO(work_order_csv(ast))), hide_index=True, width="stretch")
-    st.download_button("Download the work order (CSV)", work_order_csv(ast), f"work_order_{ast['forecast']['date']}.csv", "text/csv", key="wo_pane")
-
-
-def pane_loop_no(rows) -> None:
-    rej = [r for r in ss.audit.rows() if r["action"] == "reject"]
-    html(f"<div class='rh-note'>{len(rej)} plan(s) rejected so far. A rejection is recorded with its reason. <b>Turning a rejection into a new rule is not built yet</b>: today a person adds the rule in Plant setup.</div>")
-    if rej:
-        html("<table class='rh-log'><thead><tr><th>Time</th><th>Reason</th></tr></thead><tbody>" + "".join(f"<tr><td class='m'>{r['ts'][:16]}</td><td>{escape(str(r['reason']))}</td></tr>" for r in rej) + "</tbody></table>")
 
 
 def pane_loop_day(rows) -> None:
@@ -1045,14 +895,17 @@ def _flow(eid: str) -> list[tuple[str, str]]:
         moved = sum(1 for m in prob.get("shiftable", []) if m.get("baseline_start_h") is not None and plan.get("schedule", {}).get(m["id"]) not in (None, m["baseline_start_h"]))
         return [("Takes the inputs", f"{len(prob.get('shiftable', MACH['shiftable']))} machines that can move, their windows and crew rules, the forecast, solar and prices."),
                 ("Sets the goal", "The lowest bill for the day: energy cost in each slot plus any new peak demand."),
-                ("Keeps every hard rule", f"Contract demand {site['contract_demand_kva']} kVA, machine windows, crew rules, fixed batches."),
-                ("Solves", f"OR-Tools MILP, time limit {p['time_limit_s']} s. Starts on the hour. No language model."),
+                ("Keeps every hard rule and your guardrails", f"Contract demand {site['contract_demand_kva']} kVA" + (f" less your {p['margin_pct']}% margin" if p['margin_pct'] else "") + ", machine windows, crew rules, fixed batches" + (", no new monthly peak" if p['block_new_peak'] else "") + (f", at most {p['max_moves']} machine(s) moved" if p['max_moves'] is not None else "") + "."),
+                ("Solves", f"An exact solver, with up to {p['time_limit_s']} s to think. Starts on the hour. No AI model touches the numbers."),
                 ("Result", f"{plan.get('status', '')}: {moved} machine(s) moved, cost {rs(plan['total_rs'])}, peak {plan['peak_kva']:.0f} kVA." if plan.get("total_rs") is not None else "Appears after a run.")]
     if eid == "guard":
         checks = (s.get("policy") or {}).get("checks", [])
         return [("Takes the plan", "The schedule from the optimiser, or your edited one."),
                 ("Checks every rule again, in plain code", "Windows, crew rules, fixed batches, contract demand, this month's max."),
-                ("Blocks a plan that breaks a hard rule", "An edit that breaks one cannot be approved."),
+                ("Adds your guardrails", f"Safety margin {p['margin_pct']}%; new monthly peak {'blocked' if p['block_new_peak'] else 'allowed if still cheaper'}; "
+                 f"{'at most ' + str(p['max_moves']) + ' machine(s) moved' if p['max_moves'] is not None else 'no limit on machines moved'}; "
+                 f"smallest saving {rs(p['min_saving_rs']) if p['min_saving_rs'] else 'any'}."),
+                ("Blocks a plan that breaks a hard rule", "The usual schedule is kept instead. An edit that breaks one cannot be approved."),
                 ("Result", f"{sum(c['ok'] for c in checks)} of {len(checks)} passed." if checks else "Appears after a run.")]
     if eid == "router":
         return [("Looks at each step", "Is it maths, or words?"),
@@ -1083,38 +936,274 @@ def _flow(eid: str) -> list[tuple[str, str]]:
     return [("What it does", i.get("what", "")), ("Gives", i.get("produces", ""))]
 
 
+# ---- plain words for the activity log: the manager never needs a function name
+ACTION_WORDS = {"validate_data": "Checked the meter readings", "forecast_load": "Forecast the day's load", "solar_forecast": "Forecast rooftop solar",
+                "tariff_lookup": "Looked up the price bands", "tariff_parse": "Read a new price order", "tariff_sign_off": "Price order signed off",
+                "constraint_parse": "Read a production note", "optimise": "Found the cheapest schedule", "policy_check": "Checked every rule",
+                "orchestrate": "Planned the next step", "replan": "Tested which rule could flex", "explain": "Wrote the explanation",
+                "relax_rule": "Manager chose a rule to relax", "work_order": "Issued the work order", "reject": "Manager rejected the plan",
+                "verify_savings": "Checked the real saving", "learn": "Learned from the day", "setup_saved": "Settings saved",
+                "data_loaded": "Meter data loaded", "safe_fallback": "Kept the usual schedule", "answer_question": "Answered a question"}
+TIER_WORDS = {"T0": "Plain code", "T1": "Small AI model", "T2": "Large AI model", "human": "A person"}
+
+
+def words(action: str) -> str:
+    return ACTION_WORDS.get(action, action.replace("_", " ").capitalize())
+
+
+def kpis(items: list[tuple[str, str, str]]) -> None:
+    """A row of numbers the manager watches: (value, label, colour class)."""
+    if items:
+        html("<div class='rh-kpis'>" + "".join(f"<div><b class='{c}'>{v}</b><span>{l}</span></div>" for v, l, c in items) + "</div>")
+
+
+def _line_chart(series: list[tuple[str, list[float], str, bool]], ytitle: str, height: int = 230) -> None:
+    fig = _mini(height)
+    x = [k / SLOTS_PER_HOUR for k in range(N_SLOTS)]
+    for name, y, color, fill in series:
+        fig.add_trace(go.Scatter(x=x, y=y, name=name, line=dict(color=color, width=2.2), fill="tozeroy" if fill else None,
+                                 fillcolor="rgba(217,162,27,.14)" if fill else None))
+    fig.update_yaxes(title=dict(text=ytitle, standoff=4))
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+
+def _mini(height: int) -> go.Figure:
+    fig = go.Figure()
+    for s_ in ss.tariff["slots"]:
+        fig.add_shape(type="rect", xref="x", yref="paper", x0=s_["start_h"], x1=s_["end_h"], y0=0, y1=1,
+                      fillcolor=BAND[s_["type"]], opacity=0.07, line_width=0, layer="below")
+    fig.update_layout(height=height, margin=dict(l=8, r=8, t=8, b=8), paper_bgcolor="#fff", plot_bgcolor="#fff",
+                      font=dict(family=FONT, size=12, color=INK), hoverlabel=HOVER, legend=dict(orientation="h", y=-0.2, x=0),
+                      xaxis=dict(range=[0, 24], tickvals=list(range(0, 25, 3)), ticktext=[f"{h:02d}:00" for h in range(0, 25, 3)],
+                                 showgrid=False, tickfont=dict(color=MUTED)),
+                      yaxis=dict(gridcolor="#EEF1F6", zeroline=False, rangemode="tozero", tickfont=dict(color=MUTED)))
+    return fig
+
+
+def _metrics(eid: str, rows: list[dict]) -> list[tuple[str, str, str]]:
+    s, p, site = state or {}, ss.proc, ss.cfg["site"]
+    plan, h = s.get("plan") or {}, ss.hist
+    feed = LIVE.describe_feed(h) if h is not None else None
+    allr = ss.audit.rows()
+    n = lambda a: sum(r["action"] == a for r in allr)  # noqa: E731
+    if eid == "meters":
+        return [(f"{feed['n_rows']:,}", "readings", ""), (f"{feed['n_full_days']}", "full days", ""),
+                (str(feed["last_ts"])[:10], "latest day", "s"), (f"x{h.attrs.get('scale', 1):.2f}", "scaled to the plant", "")] if feed else []
+    if eid in ("factory", "rules"):
+        return [(str(len(notes_for_run())), "notes for the day", ""), (str(len(s.get("fixed") or [])), "fixed batches read", ""),
+                (str(len(s.get("extra") or [])), "new orders read", ""), (str(len(MACH["shiftable"])), "machines that can move", "")]
+    if eid in ("bill", "price"):
+        r_ = {b["type"]: b["rate"] for b in ss.tariff["slots"]}
+        return [(f"₹{r_.get('peak', 0):.2f}", "peak rate per kVAh", "r"), (f"₹{r_.get('solar', 0):.2f}", "solar-hours rate", "g"),
+                (f"{site['contract_demand_kva']:,}", "kVA contract demand", ""),
+                (str(sum(i.level == "warning" for i in validate_tariff(ss.tariff))), "tariff warnings", "")]
+    if eid == "orders":
+        return [(str(len(ss.library)), "signed-off orders", ""), (str(n("tariff_parse")), "orders read so far", "")]
+    if eid == "weather":
+        pv = s.get("pv")
+        return [(f"{site['rooftop_pv_kwp']:,}", "kWp on the roof", ""), (f"{max(pv['kw']):.0f}" if pv else "–", "peak solar kW", "g"),
+                (f"{sum(pv['kw']) / SLOTS_PER_HOUR:,.0f}" if pv else "–", "solar kWh in the day", ""), ("On" if p["solar_on"] else "Off", "solar in the plan", "")]
+    if eid == "collect":
+        return [(f"{feed['n_full_days']}" if feed else "0", "days of meter history", ""), (str(len(notes_for_run())), "production notes", ""),
+                (ss.w_weather, "weather setting", "s"), (f"{plan_date:%d %b}" if plan_date else "–", "day planned", "s")]
+    if eid == "check":
+        iss = s.get("data_issues") or []
+        return [(str(sum(i["level"] != "ok" for i in iss)), "warnings", "r" if any(i["level"] == "error" for i in iss) else ""),
+                (f"{p['spike_x']:g}x", "spike limit", ""), (f"{p['pf_min']:g}", "lowest normal power factor", "")]
+    if eid == "store":
+        return [(f"{len(allr):,}", "steps on record", ""), (str(len({r['run_id'] for r in allr})), "runs on record", ""), (str(len(rows)), "steps this run", "")]
+    if eid == "orch":
+        return [(str(len(rows)), "steps this run", ""), (str(sum(r["tier"] in ("T1", "T2") for r in rows)), "AI calls", ""),
+                (f"${sum(r['cost_usd'] for r in rows):.4f}", "AI spend this run", ""), (str(s.get("status", "no plan")).replace("_", " "), "status", "s")]
+    if eid == "forecast":
+        fc = s.get("forecast")
+        return [(f"{max(fc['kw']):,.0f}" if fc else "–", "peak base load kW", ""), (f"{sum(fc['kw']) / SLOTS_PER_HOUR:,.0f}" if fc else "–", "kWh in the day", ""),
+                (f"x{ss.bias:.3f}" if p["use_learning"] else "off", "learned correction", ""), ("7 days" if p["method"] == "recent" else f"{p['weeks']} weeks", "history used", "")]
+    if eid == "opt":
+        prob = s.get("problem") or {}
+        moved = sum(1 for m in prob.get("shiftable", []) if m.get("baseline_start_h") is not None and plan.get("schedule", {}).get(m["id"]) not in (None, m["baseline_start_h"]))
+        return [(rs(s["saving_rs"]) if s.get("saving_rs") is not None else "–", "saving a day", "g"), (rs(plan["total_rs"]) if plan.get("total_rs") else "–", "plan cost", ""),
+                (f"{moved}", "machines moved", ""), (f"{plan['peak_kva']:.0f}" if plan.get("peak_kva") else "–", "peak kVA", "")]
+    if eid == "guard":
+        ch = (s.get("policy") or {}).get("checks", [])
+        pk = plan.get("peak_kva")
+        return [(f"{sum(c['ok'] for c in ch)}/{len(ch)}" if ch else "–", "rules passed", "g"), (str(sum(not c["ok"] and c["hard"] for c in ch)), "hard rules broken", "r"),
+                (f"{pk / site['contract_demand_kva'] * 100:.0f}%" if pk else "–", "of contract demand used", ""), (f"{p['margin_pct']}%", "your safety margin", "")]
+    if eid == "router":
+        return [(str(sum(r["tier"] == "T0" for r in rows)), "steps in plain code", ""), (str(sum(r["tier"] == "T1" for r in rows)), "small AI calls", ""),
+                (str(sum(r["tier"] == "T2" for r in rows)), "large AI calls", ""), (f"${sum(r['cost_usd'] for r in rows):.4f}", "AI spend this run", "")]
+    if eid == "memory":
+        return [(f"x{ss.bias:.3f}", "learned correction", ""), (str(n("reject")), "rejected plans", ""), (str(n("setup_saved")), "setup changes", "")]
+    if eid == "manager":
+        return [(str(n("work_order")), "plans approved", "g"), (str(n("reject")), "plans rejected", ""), (str(n("relax_rule")), "rules relaxed", ""),
+                ("Yes" if pending else "No", "waiting for you", "r" if pending else "")]
+    if eid == "runs":
+        return [(str(n("work_order")), "work orders issued", ""), ("Yes" if ss.approved else "No", "approved plan today", "")]
+    if eid == "loop_no":
+        return [(str(n("reject")), "rejections recorded", "")]
+    if eid == "loop_day":
+        ver = [json.loads(r["detail"]) for r in allr if r["action"] == "verify_savings"]
+        tot = sum(v.get("verified_saving_rs") or 0 for v in ver)
+        return [(str(len(ver)), "days checked", ""), (rs(tot) if ver else "–", "verified saving in all", "g"),
+                (f"{ss.verify['realisation'] * 100:.0f}%" if ss.verify and ss.verify.get("realisation") else "–", "of expected saving realised", "")]
+    return []
+
+
+def box_results(eid: str, rows: list[dict]) -> None:
+    """The numbers, charts and steps a manager watches for one box."""
+    kpis(_metrics(eid, rows))
+    s = state or {}
+    if eid == "forecast" and s.get("forecast"):
+        _line_chart([("Base load kW", s["forecast"]["kw"], NAVY, False), ("Solar kW", s["pv"]["kw"], AMBER_TEXT, True)], "kW")
+    elif eid == "weather" and s.get("pv"):
+        _line_chart([("Solar kW", s["pv"]["kw"], AMBER_TEXT, True)], "kW", 200)
+    elif eid == "meters" and ss.hist is not None:
+        d = ss.hist.set_index("ts")["kw"].resample("D").mean().tail(28) * 24
+        fig = go.Figure(go.Bar(x=d.index, y=d.values, marker_color=NAVY_60, hovertemplate="%{x|%a %d %b}: %{y:,.0f} kWh<extra></extra>"))
+        fig.update_layout(height=200, margin=dict(l=8, r=8, t=8, b=8), paper_bgcolor="#fff", plot_bgcolor="#fff", font=dict(family=FONT, size=12),
+                          yaxis=dict(title="kWh a day", gridcolor="#EEF1F6"), xaxis=dict(showgrid=False))
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    elif eid in ("guard",) and s.get("policy"):
+        html("".join(f"<p class='rh-p'><span class='rh-chip {'ok' if c['ok'] else ('bad' if c['hard'] else 'warn')}'>"
+                     f"{'pass' if c['ok'] else ('fail' if c['hard'] else 'note')}</span>{c['rule']}</p>" for c in s["policy"]["checks"]))
+    elif eid == "opt" and (s.get("plan") or {}).get("schedule"):
+        sched = s["plan"]["schedule"]
+        body = "".join(f"<tr><td>{escape(str(m['name']))}</td><td class='r'>{m['kw']:.0f}</td><td class='m'>{'new' if m.get('baseline_start_h') is None else '%02d:00' % m['baseline_start_h']}</td>"
+                       f"<td class='m'><b>{sched[m['id']]:02d}:00</b></td></tr>" for m in s["problem"]["shiftable"])
+        html(f"<table class='rh-log'><thead><tr><th>Machine</th><th class='r'>kW</th><th>Usual start</th><th>Planned start</th></tr></thead><tbody>{body}</tbody></table>")
+    elif eid in ("bill", "price"):
+        bars = "".join(f"<span style='width:{(b['end_h'] - b['start_h']) / 24 * 100:.2f}%;background:{BAND[b['type']]}'>{b['type']} ₹{b['rate']:.2f}</span>" for b in ss.tariff["slots"])
+        html(f"<div class='rh-bands' role='img' aria-label='Price bands across the day'>{bars}</div><div class='rh-note'>00:00 to 24:00</div>")
+    elif eid == "check":
+        for i in s.get("data_issues") or []:
+            html(f"<p class='rh-p'><span class='rh-chip {'ok' if i['level'] == 'ok' else 'warn'}'>{i['level']}</span>{i['text']}</p>")
+    elif eid in ("rules", "factory") and run:
+        html(read_back(s))
+    html("<div class='rh-sub'>How it works, step by step</div>")
+    html("<ol class='rh-flow'>" + "".join(f"<li><span class='n'>{i}</span><div><div class='t'>{t}</div><div class='d'>{d}</div></div></li>"
+                                          for i, (t, d) in enumerate(_flow(eid), 1)) + "</ol>")
+    src = ARCH.info(eid).get("comes_from", [])
+    if src:
+        html("<div class='rh-src2'><div><b>Where its information comes from</b><ul>" + "".join(f"<li>{x}</li>" for x in src) + "</ul></div></div>")
+
+
+def box_activity(eid: str, rows: list[dict]) -> None:
+    acts = ARCH.BY_ID[eid][4] if eid in ARCH.BY_ID else ({"reject"} if eid == "loop_no" else {"verify_savings", "learn"})
+    src = ss.audit.rows() if eid in ("loop_no", "loop_day", "memory", "orders") else rows
+    mine = [r for r in src if r["action"] in acts or (eid == "router" and r["tier"] in ("T1", "T2"))]
+    if not mine:
+        html("<div class='rh-note'>Nothing from this box yet.</div>")
+        return
+    body = "".join(f"<tr><td class='m'>{r['ts'][11:19]}</td><td>{TIER_WORDS.get(r['tier'], r['tier'])}</td><td><b>{escape(words(r['action']))}</b></td>"
+                   f"<td>{escape(str(r['reason']))}</td><td class='r'>{'$%.4f' % r['cost_usd'] if r['cost_usd'] else ''}</td></tr>" for r in mine[-30:])
+    html(f"<table class='rh-log'><thead><tr><th>Time</th><th>Done by</th><th>What happened</th><th>Why</th><th class='r'>AI cost</th></tr></thead><tbody>{body}</tbody></table>")
+
+
+# ---- the controls of each box: every setting of the system lives in one of these
+def ctl_day() -> None:
+    c1, c2 = st.columns([1, 2])
+    if d_range:
+        c1.date_input("Day to plan", min_value=d_range[0], max_value=d_range[2], key="w_plan_day")
+    c2.text_input("Goal for the agent", key="w_goal")
+    st.selectbox("Solar forecast", list(WEATHER), key="w_weather")
+
+
+def ctl_check() -> None:
+    p = ss.proc
+    c1, c2 = st.columns(2)
+    p["spike_x"] = c1.slider("Flag a reading as a spike above (times the usual top load)", 1.5, 6.0, float(p["spike_x"]), 0.5, key="pk_spike")
+    p["pf_min"] = c2.slider("Lowest normal power factor", 0.3, 0.95, float(p["pf_min"]), 0.05, key="pk_pf")
+
+
+def ctl_forecast() -> None:
+    p = ss.proc
+    c1, c2 = st.columns(2)
+    meth = c1.radio("Which past days to average", ["Same weekday", "Last 7 days"], index=0 if p["method"] == "weekday" else 1, horizontal=True, key="pk_method")
+    p["method"] = "weekday" if meth == "Same weekday" else "recent"
+    p["weeks"] = c2.slider("Weeks of the same weekday", 1, 8, int(p["weeks"]), key="pk_weeks", disabled=p["method"] == "recent")
+    if ss.bias != 1.0 and st.button("Forget the learned correction", icon=":material/restart_alt:", key="pk_bias"):
+        ss.bias = 1.0
+        st.rerun()
+
+
+def ctl_opt() -> None:
+    p = ss.proc
+    p["time_limit_s"] = st.slider("Time the solver may take (seconds)", 5, 120, int(p["time_limit_s"]), 5, key="pk_time",
+                                  help="Longer can find a cheaper plan on a big problem. This plant solves in under a second.")
+    html("<div class='rh-note'>Limits on what the optimiser may do (safety margin, monthly peak, how many machines move, smallest saving) "
+         "are set in <b>Guardrails</b>.</div>")
+
+
+def ctl_guard() -> None:
+    p, cd = ss.proc, ss.cfg["site"]["contract_demand_kva"]
+    c1, c2 = st.columns(2, gap="large")
+    with c1:
+        p["margin_pct"] = st.slider("Safety margin below the contract demand (%)", 0, 20, int(p["margin_pct"]), key="g_margin",
+                                    help="The plan must stay this far under the contract demand.")
+        html(f"<div class='rh-note' style='margin:-6px 0 12px'>The plan may draw at most <b>{cd * (1 - p['margin_pct'] / 100):,.0f} kVA</b> (contract {cd:,} kVA).</div>")
+        p["block_new_peak"] = st.toggle("Never set a new monthly peak", value=bool(p["block_new_peak"]), key="g_peak",
+                                        help="On: the plan never goes above this month's highest demand. Off: it may, if the plan is still cheaper with the extra demand charge.")
+    with c2:
+        lim = st.toggle("Limit how many machines move in a day", value=p["max_moves"] is not None, key="g_lim",
+                        help="Fewer moves means less disruption on the floor, and maybe a smaller saving.")
+        nm = len(MACH["shiftable"])
+        p["max_moves"] = st.slider("Most machines moved", 0, nm, min(int(p["max_moves"] if p["max_moves"] is not None else 2), nm), key="g_moves") if lim else None
+        p["min_saving_rs"] = st.number_input("Smallest saving worth changing the schedule (₹ a day)", 0, 1_000_000, int(p["min_saving_rs"]), 250, key="g_min",
+                                             help="Below this, the agent keeps the usual schedule.")
+    html("<div class='rh-locked'><b>Always on. These cannot be switched off:</b><ul>"
+         "<li>The plan never goes above the contract demand.</li><li>Fixed batches never move or stop midway.</li>"
+         "<li>Every machine runs inside its allowed hours.</li><li>Crew rules hold (edit them in <b>Factory systems</b>).</li>"
+         "<li>A person approves every plan before anything runs.</li></ul></div>")
+
+
+def ctl_store() -> None:
+    df = pd.DataFrame(ss.audit.rows())
+    html(f"<div class='rh-note'>Every step of every run is kept: {len(df):,} rows.</div>")
+    if len(df):
+        st.download_button("Download the full record (CSV)", df.to_csv(index=False).encode(), "righthour_audit.csv", "text/csv", icon=":material/download:")
+
+
+def ctl_manager() -> None:
+    if not run:
+        html("<div class='rh-note'>Generate a plan first.</div>")
+    elif pending and pending["type"] == "choose_relaxation":
+        problem_panel("pane")
+    elif pending and pending["type"] == "approval":
+        approval_controls("pane")
+    else:
+        html(f"<div class='rh-note'>Nothing is waiting for you. Status: <b>{str(state.get('status', '')).replace('_', ' ')}</b>.</div>")
+
+
+def ctl_runs() -> None:
+    if not ss.approved:
+        html("<div class='rh-note'>No approved plan yet. Approve one in <b>Manager decides</b>.</div>")
+        return
+    ast = ss.approved[1]
+    st.dataframe(pd.read_csv(io.BytesIO(work_order_csv(ast))), hide_index=True, width="stretch")
+    st.download_button("Download the work order (CSV)", work_order_csv(ast), f"work_order_{ast['forecast']['date']}.csv", "text/csv",
+                       key="wo_pane", icon=":material/download:")
+
+
+def ctl_none(text: str):
+    return lambda: html(f"<div class='rh-note'>{text}</div>")
+
+
+CONTROLS = {"meters": lambda: meter_controls("cr"), "factory": lambda: (notes_editor(), pane_machines()), "rules": notes_editor,
+            "bill": lambda: pane_bill([]), "price": lambda: pane_bill([]), "orders": lambda: pane_orders([]),
+            "weather": lambda: (st.selectbox("Solar forecast", list(WEATHER), key="w_weather", disabled=not ss.proc["solar_on"]), pane_weather([])),
+            "collect": ctl_day, "orch": ctl_day, "check": ctl_check, "store": ctl_store, "forecast": ctl_forecast, "opt": ctl_opt,
+            "guard": ctl_guard, "router": lambda: pane_router([]), "memory": lambda: pane_memory([]), "manager": ctl_manager, "runs": ctl_runs,
+            "loop_no": ctl_none("No settings yet. Each rejection is saved with its reason. Turning a reason into a new rule is not built yet: "
+                                "for now, add the rule in <b>Factory systems</b>."),
+            "loop_day": lambda: pane_loop_day([])}
+PANES = CONTROLS
+
+
 # the on/off switch on boxes that can be left out of a run
 SWITCH = {"weather": ("solar_on", "Use rooftop solar", "Off: the plan counts no solar power."),
           "forecast": ("use_learning", "Use the learned correction", "Off: the forecast is the plain average of past days."),
           "rules": ("notes_on", "Read the day's production notes", "Off: notes are ignored, so batches and orders are not planned."),
           "factory": ("notes_on", "Read the day's production notes", "Off: notes are ignored, so batches and orders are not planned.")}
-
-
-def box_controls(eid: str) -> None:
-    """Knobs that change how this box works. They apply to the next plan."""
-    p = ss.proc
-    if eid == "forecast":
-        c1, c2 = st.columns(2)
-        meth = c1.radio("Which past days", ["Same weekday", "Last 7 days"], index=0 if p["method"] == "weekday" else 1, horizontal=True, key="pk_method")
-        p["method"] = "weekday" if meth == "Same weekday" else "recent"
-        p["weeks"] = c2.slider("Weeks of the same weekday", 1, 8, int(p["weeks"]), key="pk_weeks", disabled=p["method"] == "recent")
-    elif eid == "check":
-        c1, c2 = st.columns(2)
-        p["spike_x"] = c1.slider("Spike limit (times the 99th-percentile load)", 1.5, 6.0, float(p["spike_x"]), 0.5, key="pk_spike")
-        p["pf_min"] = c2.slider("Lowest normal power factor", 0.3, 0.95, float(p["pf_min"]), 0.05, key="pk_pf")
-    elif eid == "opt":
-        p["time_limit_s"] = st.slider("Solver time limit (seconds)", 5, 120, int(p["time_limit_s"]), 5, key="pk_time",
-                                      help="Longer can find a cheaper plan on a big problem. This plant solves in under a second.")
-    elif eid == "orch":
-        st.text_input("Goal for the agent", key="w_goal")
-        st.selectbox("Solar forecast", list(WEATHER), key="w_weather")
-    elif eid == "weather":
-        st.selectbox("Solar forecast", list(WEATHER), key="w_weather", disabled=not p["solar_on"])
-    else:
-        return
-    if p != PROCESS_DEFAULTS and st.button("Back to the standard process", icon=":material/restart_alt:", key=f"pk_reset_{eid}", type="tertiary"):
-        ss.proc = dict(PROCESS_DEFAULTS)
-        st.rerun()
 
 
 def box_panel(eid: str, rows: list[dict], astates: dict) -> None:
@@ -1130,36 +1219,18 @@ def box_panel(eid: str, rows: list[dict], astates: dict) -> None:
             k, label, hint = SWITCH[eid]
             ss.proc[k] = c2.toggle(label, value=ss.proc[k], key=f"sw_{k}_{eid}", help=hint)
         if run and run.get("proc", ss.proc) != ss.proc:
-            html(f"<div class='rh-alert'><b>{ICONS['alert']}Process changed.</b> The next plan uses it. "
+            html(f"<div class='rh-alert'><b>{ICONS['alert']}Settings changed.</b> The next plan uses them. "
                  "Press <b>Generate plan</b> to see the effect.</div>")
-        t1, t2, t3 = st.tabs([":material/route: How it works", ":material/receipt_long: Run log", ":material/tune: Controls"])
+        t1, t2, t3 = st.tabs([":material/monitoring: Results", ":material/tune: Controls", ":material/receipt_long: Activity"])
         with t1:
-            steps = _flow(eid)
-            html("<ol class='rh-flow'>" + "".join(f"<li><span class='n'>{i}</span><div><div class='t'>{t}</div><div class='d'>{d}</div></div></li>"
-                                                  for i, (t, d) in enumerate(steps, 1)) + "</ol>")
-            src = "".join(f"<li>{x}</li>" for x in info.get("comes_from", []))
-            html(f"<div class='rh-src2'><div><b>Where its information comes from</b><ul>{src}</ul></div>"
-                 f"<div><b>In the code</b><p class='mono'>{info.get('code', '')}</p><b>Gives</b><p>{info.get('produces', '')}</p></div></div>")
+            box_results(eid, rows)
         with t2:
-            acts = ARCH.BY_ID[eid][4] if eid in ARCH.BY_ID else ({"reject"} if eid == "loop_no" else {"verify_savings", "learn"})
-            mine = [r for r in rows if r["action"] in acts or (eid == "router" and r["tier"] in ("T1", "T2"))]
-            if not mine:
-                html("<div class='rh-note'>No steps from this box in this run yet.</div>")
-            else:
-                step_rows({r["action"] for r in mine}, mine)
-                for r in mine:
-                    with st.expander(f"{r['ts'][11:19]} · {r['action']} · details"):
-                        st.code(json.dumps(json.loads(r["detail"]), indent=1, default=str)[:3000], language="json")
+            _ = CONTROLS[eid]()   # assigned, so Streamlit does not print the return value
+            if ss.proc != PROCESS_DEFAULTS and st.button("Back to the standard settings", icon=":material/restart_alt:", key=f"pk_reset_{eid}", type="tertiary"):
+                ss.proc = dict(PROCESS_DEFAULTS)
+                st.rerun()
         with t3:
-            box_controls(eid)
-            if eid in PANES:
-                PANES[eid](rows)
-
-
-PANES = {"meters": pane_meters, "factory": pane_factory, "bill": pane_bill, "orders": pane_orders, "weather": pane_weather,
-         "collect": pane_collect, "check": pane_check, "store": pane_store, "orch": pane_orch, "price": pane_price,
-         "forecast": pane_forecast, "rules": pane_rules, "opt": pane_opt, "guard": pane_guard, "manager": pane_manager,
-         "runs": pane_runs, "loop_no": pane_loop_no, "loop_day": pane_loop_day, "router": pane_router, "memory": pane_memory}
+            box_activity(eid, rows)
 
 
 def control_room() -> None:
@@ -1349,23 +1420,21 @@ def log_tab() -> None:
          + ", ".join(f"<span class='mono'>{m}</span> ${PRICES[m][0]} / ${PRICES[m][1]}" for m in MODELS[LLM.provider].values())
          + " per million tokens)</div></div>")
     body = "".join(
-        f"<tr><td class='m'>{r['ts'][11:]}</td><td>{chip(r['tier'])}</td><td>{escape(str(r['agent']))}</td><td><b>{escape(str(r['action']))}</b></td>"
+        f"<tr><td class='m'>{r['ts'][11:19]}</td><td>{chip(r['tier'])}</td><td>{escape(str(r['agent']))}</td><td><b>{escape(words(r['action']))}</b></td>"
         f"<td>{escape(str(r['reason']))}</td><td>{escape(str(r['mode']))}</td><td class='r'>{'$%.4f' % r['cost_usd'] if r['cost_usd'] else ''}</td></tr>"
         for r in rows)
     html(f"<table class='rh-log'><thead><tr><th>Time</th><th>Tier</th><th>Agent</th><th>Step</th><th>Why this tier</th>"
          f"<th>Mode</th><th class='r'>Cost</th></tr></thead><tbody>{body}</tbody></table>")
-    with st.expander("Step details (JSON)"):
-        for r in rows:
-            st.markdown(f"**{r['agent']}: {r['action']}**")
-            st.code(json.dumps(json.loads(r["detail"]), indent=1, default=str)[:3000], language="json")
-
 
 
 def audit_tab() -> None:
     rows = ss.audit.rows()
     df = pd.DataFrame(rows)
-    st.dataframe(df[["ts", "run_id", "agent", "action", "tier", "model", "mode", "reason", "cost_usd"]] if len(df) else df,
-                 width='stretch', hide_index=True, height=420)
+    if len(df):
+        view = pd.DataFrame({"Time": df["ts"].str.slice(0, 19).str.replace("T", " "), "Run": df["run_id"], "Who": df["agent"],
+                             "What happened": df["action"].map(words), "Done by": df["tier"].map(lambda t: TIER_WORDS.get(t, t)),
+                             "Why": df["reason"], "AI cost ($)": df["cost_usd"].round(4)})
+        st.dataframe(view.iloc[::-1], width="stretch", hide_index=True, height=460)
     if len(df):
         st.download_button("Download audit trail (CSV)", df.to_csv(index=False).encode(), "righthour_audit.csv", "text/csv")
 
@@ -1418,33 +1487,7 @@ def page_data() -> None:
             html(f"<div class='rh-kv three'><div><b>{f['n_rows']:,}</b>readings</div><div><b>{f['n_full_days']}</b>full days</div>"
                  f"<div><b>{str(f['last_ts'])[:10]}</b>latest day</div></div>"
                  f"<div class='rh-note' style='margin-bottom:10px'>{escape(str(h.attrs.get('source', '')))}</div>")
-        up = st.file_uploader("Upload a meter CSV", type=["csv"], key="d_up",
-                              help="Same columns as the UCI steel dataset: date, Usage_kWh, Lagging_Current_Power_Factor.")
-        auto = st.toggle("Scale the load to this plant's size", value=ss.scale_mode, key="d_scale",
-                         help="The UCI plant is smaller than the demo site. Scaling keeps its real shape at the site's size.")
-        b1, b2, b3 = st.columns(3)
-        choice = None
-        if b1.button("Load my CSV", type="primary", width="stretch", disabled=up is None, key="d_load"):
-            choice = "upload"
-        if b2.button("Steel plant data", width="stretch", disabled=not STEEL_FILE.exists(), key="d_steel",
-                     help="Steel_industry_data.csv (UCI, DAEWOO Steel). The default."):
-            choice = "steel"
-        if b3.button("Sample data", width="stretch", key="d_sample", help="A labelled synthetic profile."):
-            choice = "sample"
-        if choice:
-            try:
-                ss.scale_mode = auto
-                scale = None if auto else 3.0
-                ss.hist = {"upload": lambda: D.load_uci_csv(up, scale), "steel": lambda: D.load_uci_csv(STEEL_FILE, scale),
-                           "sample": D.synthetic_history}[choice]()
-                ss.w_live, ss.live_active, ss.live_future, ss.live_base = False, False, [], None
-                reset_run()
-                ss.autoran = False
-                ss.audit.log("setup", "Plant manager", "data_loaded", tier="human", mode="human",
-                             reason=f"meter data source set to: {choice}", detail={"rows": len(ss.hist)})
-                st.rerun()
-            except Exception as e:  # noqa: BLE001
-                st.error(f"Could not read that file: {e}. Check it has the columns date, Usage_kWh and Lagging_Current_Power_Factor.")
+        meter_controls("d")
     with right:
         with st.container(border=True):
             card_title("pulse", "Data health", "Checked every time data loads")

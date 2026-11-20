@@ -105,17 +105,15 @@ def svg(states: dict[str, str], selected: str | None = None) -> str:
                f"<path class='hit' d='M1110 570V620H115V586'/>"
                f"<path class='dg-dash {'on' if loop_day == 'ran' else ''}' d='M1110 570V620H115V586' fill='none' marker-end='url(#ah)'/>"
                "<text class='dg-loop' x='560' y='612' text-anchor='middle'>Next day: the meters check the saving</text></g>")
-    out.append(f"<text class='dg-code' x='560' y='638' text-anchor='middle'>agents.verify_and_learn</text>")
-    out.append("<text class='dg-code' x='974' y='262'>reject reason is logged;</text><text class='dg-code' x='974' y='275'>auto-rule is not built yet</text>")
+    out.append("<text class='dg-s' x='974' y='262'>reasons are saved;</text><text class='dg-s' x='974' y='277'>auto-rules come later</text>")
     # boxes
     for eid, title, sub, code, _a, kind, x, y, w, h in E:
         s = states[eid]
-        out.append(f"<g class='dg-box {kind} s-{s}{' sel' if selected == eid else ''}' data-id='{eid}'><title>{escape(title)}: {STATE_TEXT[s]}. Code: {escape(code)}</title>"
+        out.append(f"<g class='dg-box {kind} s-{s}{' sel' if selected == eid else ''}' data-id='{eid}'><title>{escape(title)}: {STATE_TEXT[s]}. Click to open.</title>"
                    f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='8'/>"
                    f"{_badge(x, y, w, s)}"
                    f"<text class='dg-t' x='{x + 14}' y='{y + 26}'>{escape(title)}</text>"
-                   f"{_lines(x + 14, y + 46, sub, 'dg-s')}"
-                   f"<text class='dg-code' x='{x + 14}' y='{y + h - 10}'>{escape(code)}</text></g>")
+                   f"{_lines(x + 14, y + 46, sub, 'dg-s')}</g>")
     out.append("</svg>")
     return "".join(out)
 

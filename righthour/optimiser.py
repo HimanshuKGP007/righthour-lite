@@ -55,7 +55,8 @@ def optimise_schedule(problem: dict, time_limit_s: int = 20) -> dict:
     base, pf, pv = problem["base_kw"], problem["pf"], problem["pv_kw"]
     tariff = problem["tariff"]
     rates = slot_rates(tariff)
-    cd, mtd = problem["contract_demand_kva"], problem["mtd_max_kva"]
+    g = problem.get("guard") or {}
+    cd, mtd = problem["contract_demand_kva"] * (1 - (g.get("margin_pct") or 0) / 100), problem["mtd_max_kva"]
     dc = tariff["demand_charge_per_kva_month"]
     machines = problem["shiftable"]
     fixed_kw = machine_kw(problem["fixed"], [], {})
@@ -86,6 +87,17 @@ def optimise_schedule(problem: dict, time_limit_s: int = 20) -> dict:
         solver.Add(base_kva[k] + mimp[k] <= cd)
         solver.Add(peak >= base_kva[k] + mimp[k])
     solver.Add(extra >= peak - mtd)
+    if g.get("block_new_peak"):                       # the manager's guardrail: never set a new monthly peak
+        solver.Add(peak <= mtd)
+    if g.get("max_moves") is not None:                # the manager's guardrail: move at most N machines
+        moved = []
+        for m in machines:
+            b = m.get("baseline_start_h")
+            if b is None:
+                continue
+            moved.append(1 - x[m["id"], b] if (m["id"], b) in x else 1)
+        if moved:
+            solver.Add(sum(moved) <= int(g["max_moves"]))
 
     by_id = {m["id"]: m for m in machines}
     for a, b in problem.get("no_overlap", []):
