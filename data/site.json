@@ -1,0 +1,9 @@
+{
+  "name": "Demo plant: mid-sized forging unit, Pune cluster (illustrative)",
+  "latitude": 18.52,
+  "longitude": 73.86,
+  "contract_demand_kva": 1000,
+  "month_to_date_max_kva": 900,
+  "rooftop_pv_kwp": 150,
+  "working_days_per_year": 300
+}

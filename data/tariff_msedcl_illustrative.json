@@ -1,0 +1,14 @@
+{
+  "id": "msedcl-ht-industrial-illustrative",
+  "name": "MSEDCL-style HT industrial ToD tariff (illustrative)",
+  "state": "Maharashtra",
+  "unit": "kVAh",
+  "slots": [
+    {"start_h": 0,  "end_h": 9,  "type": "normal", "rate": 8.79},
+    {"start_h": 9,  "end_h": 17, "type": "solar",  "rate": 7.17},
+    {"start_h": 17, "end_h": 24, "type": "peak",   "rate": 10.55}
+  ],
+  "demand_charge_per_kva_month": 600,
+  "status": "illustrative",
+  "source": "Peak 10.55 and solar 7.17 are the deck's unverified rates. Normal 8.79 and the demand charge are team assumptions. Replace with MERC Case No. 75 of 2025 before presenting."
+}

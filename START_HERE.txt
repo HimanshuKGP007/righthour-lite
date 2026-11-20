@@ -1,0 +1,17 @@
+RightHour Lite: how to open it
+
+Mac:      double-click  RightHour.command
+          (first time only: if the Mac says it cannot verify the file, right-click it, choose Open, then Open again)
+Windows:  double-click  RightHour.bat
+
+You need Python 3 on the computer (python.org). Nothing else.
+The first start installs the parts it needs and takes about 2 minutes. After that it starts in seconds.
+Your browser opens by itself. The app already holds the steel industry data and runs the first plan for you.
+
+Tabs: Plan (the result and approval), Control room (the design diagram: click any box to see where its information comes from and to change its settings),
+Agent log, Audit trail.
+Sidebar: the day to plan, solar forecast, goal, Live mode, and the language model switch (Offline, Groq or Claude).
+Live mode: the last 7 days of the steel file are held back and arrive one by one like a real meter feed. Each arrival checks yesterday's plan and plans the next day.
+You can also drop a CSV in the incoming/ folder while Live mode is on.
+Your own settings (machines, price bands, contract demand) are saved in plant_config.json next to the app.
+To stop: close the black terminal window.

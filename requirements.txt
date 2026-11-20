@@ -1,0 +1,7 @@
+pandas>=2.0
+ortools>=9.10
+langgraph>=1.0
+streamlit>=1.40
+plotly>=5.20
+# live language-model steps use Groq over plain HTTP: no extra package. Set GROQ_API_KEY.
+# anthropic>=0.40
