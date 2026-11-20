@@ -32,6 +32,15 @@ ICONS = {
     "notes": _svg("<rect x='4' y='3.5' width='12' height='14' rx='1.6'/><path d='M7.5 2.5v2M12.5 2.5v2M7 8.5h6M7 11.5h6M7 14.5h3.5'/>"),
     "clipboard": _svg("<rect x='4.5' y='3.5' width='11' height='14' rx='1.6'/><path d='M7.5 3.5V2.8h5v.7M7.5 9.5l1.6 1.6 3.4-3.6M7.5 14h5'/>"),
     "pulse": _svg("<path d='M2.5 10.5h3.2l2-5 3.6 9 2-4h4.2'/>"),
+    "rupee": _svg("<path d='M6 4h9M6 7.5h9M6 4c4.5 0 5.5 7-.5 7H6l6.5 6'/>"),
+    "chart": _svg("<path d='M3 16.5h14'/><path d='M4.5 13l3.5-4 3 2.5 4.5-6'/>"),
+    "loop": _svg("<path d='M15.5 8A6 6 0 004.6 6.5M4.5 12a6 6 0 0010.9 1.5'/><path d='M4.5 3.5v3h3M15.5 16.5v-3h-3'/>"),
+    "cpu": _svg("<rect x='5' y='5' width='10' height='10' rx='2'/><rect x='8' y='8' width='4' height='4' rx='.6'/><path d='M8 2.5v2.5M12 2.5v2.5M8 15v2.5M12 15v2.5M2.5 8H5M2.5 12H5M15 8h2.5M15 12h2.5'/>"),
+    "route": _svg("<circle cx='5' cy='5' r='2'/><circle cx='15' cy='15' r='2'/><path d='M7 5h5.5a2.5 2.5 0 010 5h-5a2.5 2.5 0 000 5H13'/>"),
+    "meter": _svg("<path d='M3.5 13.5a6.5 6.5 0 1113 0'/><path d='M10 13.5l3-4.5'/><circle cx='10' cy='13.5' r='1' fill='currentColor'/><path d='M3.5 16.5h13'/>"),
+    "lock": _svg("<rect x='4.5' y='9' width='11' height='8' rx='1.6'/><path d='M7 9V6.5a3 3 0 016 0V9'/>"),
+    "database": _svg("<ellipse cx='10' cy='5' rx='6' ry='2.2'/><path d='M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5M4 10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2'/>"),
+    "factory": _svg("<path d='M2.5 17V9l4 2.5V9l4 2.5V9l4 2.5V4h3v13z'/><path d='M6 14h1.5M9.5 14H11M13 14h1.5'/>"),
     "history": _svg("<path d='M3.6 10a6.4 6.4 0 101.9-4.5L3.5 7.5'/><path d='M3.5 3.8v3.7h3.7M10 6.8V10l2.4 1.5'/>"),
 }
 
@@ -348,6 +357,41 @@ html, body, .stApp { font-size:14.5px; }
   box-shadow:none !important; border:0 !important; transform:none !important; }
 [data-testid="stDialog"] section[role="dialog"] h2 { font-size:17px !important; }
 @media (max-width: 700px){ [data-testid="stDialog"] > div { right:16px; bottom:84px; } }
+/* ---------- infographics: process chain, gauges, rule chips, locked rules, update bar */
+.rh-chain { list-style:none; margin:4px 0 14px; padding:0; display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:10px; }
+.rh-chain li { position:relative; background:#fff; border:1px solid var(--rule); border-radius:8px; padding:12px 12px 12px; }
+.rh-chain li:not(:last-child)::after { content:""; position:absolute; right:-9px; top:22px; width:8px; height:8px; border-top:2px solid var(--navy-30);
+  border-right:2px solid var(--navy-30); transform:rotate(45deg); background:transparent; z-index:1; }
+.rh-chain .n { display:inline-grid; place-items:center; width:24px; height:24px; border-radius:50%; background:var(--navy-10); color:var(--navy);
+  font-size:12px; font-weight:650; font-family:'IBM Plex Mono', monospace; }
+.rh-chain li.last { border-color:var(--navy); background:var(--navy-05); } .rh-chain li.last .n { background:var(--navy); color:#fff; }
+.rh-chain .t { font-size:14px; font-weight:650; color:var(--ink); margin:8px 0 3px; line-height:1.3; }
+.rh-chain .d { font-size:12.5px; color:var(--muted); line-height:1.45; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+.rh-chain .d b { color:var(--ink); } .rh-chain .d b.off { color:var(--red); }
+.rh-gauges { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin:6px 0 8px; }
+.rh-gauge { background:#fff; border:1px solid var(--rule); border-radius:8px; padding:12px 14px; }
+.rh-gauge .h { display:flex; align-items:center; gap:6px; font-size:var(--cap); text-transform:uppercase; letter-spacing:.07em; font-weight:600; color:var(--muted); }
+.rh-gauge.ok .h svg { color:var(--green); } .rh-gauge.bad .h svg { color:var(--amber-t); }
+.rh-gauge .v { font-size:24px; font-weight:600; color:var(--navy); margin:6px 0 8px; font-variant-numeric:tabular-nums; }
+.rh-gauge .v small { font-size:12.5px; color:var(--muted); font-weight:500; margin-left:5px; }
+.rh-gauge .bar { position:relative; height:8px; border-radius:4px; background:var(--navy-10); }
+.rh-gauge .bar i { position:absolute; inset:0 auto 0 0; border-radius:4px; background:var(--green); }
+.rh-gauge.bad .bar i { background:var(--amber); }
+.rh-gauge .bar b { position:absolute; top:-4px; bottom:-4px; width:2px; background:var(--ink); }
+.rh-gauge .f { font-size:12px; color:var(--muted); margin-top:7px; }
+.rh-rchips { display:flex; flex-wrap:wrap; gap:6px; }
+.rh-rchips span { display:inline-flex; align-items:center; gap:6px; font-size:13px; padding:5px 10px 5px 8px; border-radius:6px; line-height:1.3;
+  background:var(--green-bg); color:#1F4F37; }
+.rh-rchips span svg { width:15px; height:15px; flex:none; }
+.rh-rchips span.warn { background:var(--amber-bg); color:var(--amber-t); } .rh-rchips span.bad { background:var(--red-bg); color:var(--red); }
+.rh-lockgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:8px; margin:6px 0 4px; }
+.rh-lockgrid div { display:flex; align-items:center; gap:8px; font-size:13.5px; color:var(--ink); padding:9px 11px; border-radius:8px;
+  background:var(--navy-05); border:1px solid var(--rule); }
+.rh-lockgrid svg { color:var(--navy-60); flex:none; }
+.rh-upd { display:flex; align-items:center; gap:8px; font-size:13.5px; color:var(--muted); }
+.rh-upd svg { color:var(--green); } .rh-upd.on { color:var(--ink); font-weight:600; } .rh-upd.on svg { color:var(--amber-t); }
+[data-testid="stSliderThumbValue"], [data-testid="stSliderTickBarMin"], [data-testid="stSliderTickBarMax"] { white-space:nowrap !important; }
+[data-testid="stSliderThumbValue"] { font-family:'IBM Plex Mono', monospace; font-size:12.5px; }
 @media (prefers-reduced-motion: reduce){ *, *::before, *::after { animation:none !important; transition:none !important; } }
 </style>
 """

@@ -41,6 +41,7 @@ def tier_model(tier: str) -> str | None:
 
 
 SMALL_MODEL_MAX_INPUT = 100_000
+ESCALATE_AT = 3      # the attempt that goes to the large model: 3 = the small model gets two tries (set in the Control room)
 
 TASK_DEFAULT = {
     "validate_data": "T0", "forecast_load": "T0", "solar_forecast": "T0", "tariff_lookup": "T0",
@@ -68,8 +69,9 @@ def route(task: str, attempt: int = 1, input_tokens: int = 0, novel: bool = Fals
               "answer_question": "free-form question: large model"}.get(task, f"default tier for '{task}'")
     if tier == "T0":
         return Route(task, "T0", None, "deterministic code or ML; no language model")
-    if tier == "T1" and attempt >= 3:
-        tier, reason = "T2", "small-model output failed validation twice"
+    if tier == "T1" and attempt >= ESCALATE_AT:
+        n = ESCALATE_AT - 1
+        tier, reason = "T2", f"small-model output failed validation {'once' if n == 1 else ('twice' if n == 2 else f'{n} times')}"
     elif tier == "T1" and infeasible:
         tier, reason = "T2", "optimiser found no feasible plan; a soft rule must be chosen"
     elif tier == "T1" and novel:

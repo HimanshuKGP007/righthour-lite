@@ -23,8 +23,28 @@ def load_tariff(path: str | Path) -> dict:
     return json.loads(Path(path).read_text())
 
 
-def validate_tariff(t: dict) -> list[TariffIssue]:
-    """Schema check plus the Rule 8A floors (C&I: peak >= 1.2x normal, solar <= 0.8x normal)."""
+PRICE_RULES = {"peak_x": 1.2, "solar_off": 0.2, "spread_x": 1.5}   # Rule 8A floors and the deck's spread; the manager can change them
+
+
+def price_gauges(t: dict, rules: dict | None = None) -> list[dict]:
+    """The three price checks as numbers, for a picture: what the tariff gives against the floor it should meet."""
+    r = {**PRICE_RULES, **(rules or {})}
+    rate = {s["type"]: s["rate"] for s in t.get("slots") or []}
+    n, pk, so = rate.get("normal"), rate.get("peak"), rate.get("solar")
+    out = []
+    if n and pk:
+        out.append({"name": "Peak price", "value": pk / n, "floor": r["peak_x"], "unit": "x normal", "ok": pk / n >= r["peak_x"] - 1e-9, "more_is_ok": True})
+    if n and so:
+        out.append({"name": "Solar discount", "value": (1 - so / n) * 100, "floor": r["solar_off"] * 100, "unit": "% off normal",
+                    "ok": so <= (1 - r["solar_off"]) * n + 1e-9, "more_is_ok": True})
+    if pk and so:
+        out.append({"name": "Peak vs solar", "value": pk / so, "floor": r["spread_x"], "unit": "x solar", "ok": pk / so >= r["spread_x"] - 1e-9, "more_is_ok": True})
+    return out
+
+
+def validate_tariff(t: dict, rules: dict | None = None) -> list[TariffIssue]:
+    """Schema check plus the Rule 8A floors (C&I: peak >= 1.2x normal, solar <= 0.8x normal). `rules` overrides the floors."""
+    pr = {**PRICE_RULES, **(rules or {})}
     issues: list[TariffIssue] = []
     slots = t.get("slots") or []
     if not slots:
@@ -51,12 +71,12 @@ def validate_tariff(t: dict) -> list[TariffIssue]:
     rate = {s["type"]: s["rate"] for s in slots}
     if "normal" in rate:
         n = rate["normal"]
-        if "peak" in rate and rate["peak"] < 1.2 * n - 1e-9:
-            issues.append(TariffIssue("warning", f"Peak {rate['peak']:.2f} is {rate['peak']/n:.3f}x normal; Rule 8A floor for C&I is 1.2x."))
-        if "solar" in rate and rate["solar"] > 0.8 * n + 1e-9:
-            issues.append(TariffIssue("warning", f"Solar {rate['solar']:.2f} is only {(1-rate['solar']/n)*100:.1f}% below normal; Rule 8A floor is 20%."))
-    if "peak" in rate and "solar" in rate and rate["peak"] / rate["solar"] < 1.5 - 1e-9:
-        issues.append(TariffIssue("warning", f"Peak is {rate['peak']/rate['solar']:.2f}x solar; the deck claims at least 1.5x (1.2 / 0.8)."))
+        if "peak" in rate and rate["peak"] < pr["peak_x"] * n - 1e-9:
+            issues.append(TariffIssue("warning", f"Peak {rate['peak']:.2f} is {rate['peak']/n:.3f}x normal; the floor is {pr['peak_x']:g}x."))
+        if "solar" in rate and rate["solar"] > (1 - pr["solar_off"]) * n + 1e-9:
+            issues.append(TariffIssue("warning", f"Solar {rate['solar']:.2f} is only {(1-rate['solar']/n)*100:.1f}% below normal; the floor is {pr['solar_off']*100:g}%."))
+    if "peak" in rate and "solar" in rate and rate["peak"] / rate["solar"] < pr["spread_x"] - 1e-9:
+        issues.append(TariffIssue("warning", f"Peak is {rate['peak']/rate['solar']:.2f}x solar; the floor is {pr['spread_x']:g}x."))
     if t.get("status") == "illustrative":
         issues.append(TariffIssue("warning", "Rates are illustrative, not from the final MERC order."))
     return issues

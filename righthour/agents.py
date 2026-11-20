@@ -315,7 +315,10 @@ def relaxation_options(ctx: Context, st: dict | None = None) -> list[dict]:
 PROCESS_DEFAULTS = {"weeks": 4, "method": "weekday", "use_learning": True, "solar_on": True, "spike_x": 3.0, "pf_min": 0.6,
                     "time_limit_s": 20, "notes_on": True,
                     # guardrails the manager sets: the optimiser obeys them and the rule check enforces them
-                    "margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0}
+                    "margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0,
+                    # learning from the next-day check, the data needed to plan, AI retries, the live feed
+                    "learn_rate": 0.5, "learn_step_max": 0.10, "learn_outlier": 0.5, "min_history_days": 14, "small_tries": 2,
+                    "live_hold_days": 7}
 GUARD_KEYS = ("margin_pct", "block_new_peak", "max_moves", "min_saving_rs")
 
 
@@ -548,10 +551,11 @@ def verify_and_learn(ctx: Context, run: dict, executed: dict[str, int], actual: 
     err = (sum(a) / N_SLOTS) / (sum(run["forecast"]["kw"]) / N_SLOTS) - 1
     # Learn halfway towards the observed level, but never more than 10% in one day, and not at all when the day is so far
     # off (over 50%) that it is more likely a holiday, a shutdown or the wrong file than a forecast that needs correcting.
-    if abs(err) > 0.5:
+    lp = {**PROCESS_DEFAULTS, **(ctx.process or {})}
+    if abs(err) > lp["learn_outlier"]:
         new_bias, learn_note = ctx.bias, f"day was {err:+.0%} off the forecast: treated as an outlier, correction unchanged"
     else:
-        step = max(-0.10, min(0.10, 0.5 * err))
+        step = max(-lp["learn_step_max"], min(lp["learn_step_max"], lp["learn_rate"] * err))
         new_bias = ctx.bias * (1 + step)
         learn_note = "forecast correction moves halfway towards the observed load level, at most 10% a day"
     res = {"adjusted_baseline_rs": adj_base["total_rs"], "actual_rs": act["total_rs"], "verified_saving_rs": verified,
