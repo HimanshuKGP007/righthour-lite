@@ -27,7 +27,20 @@ ICONS = {
     "person": _svg("<circle cx='10' cy='6.6' r='3'/><path d='M3.8 17c.5-3.2 3-5 6.2-5s5.7 1.8 6.2 5'/>"),
     "chip": _svg("<rect x='5' y='5' width='10' height='10' rx='2'/><path d='M8 2.5v2.5M12 2.5v2.5M8 15v2.5M12 15v2.5M2.5 8H5M2.5 12H5M15 8h2.5M15 12h2.5'/>"),
     "clock": _svg("<circle cx='10' cy='10' r='7.2'/><path d='M10 5.8V10l2.8 1.8'/>"),
+    "upload": _svg("<path d='M10 13V3.5M6.2 7.2L10 3.5l3.8 3.7'/><path d='M3.5 12.5v2.3A1.7 1.7 0 005.2 16.5h9.6a1.7 1.7 0 001.7-1.7v-2.3'/>"),
+    "doc": _svg("<path d='M11.5 2.5H6A1.5 1.5 0 004.5 4v12A1.5 1.5 0 006 17.5h8a1.5 1.5 0 001.5-1.5V6.5z'/><path d='M11.5 2.5v4h4M7.5 10.5h5M7.5 13.5h5'/>"),
+    "notes": _svg("<rect x='4' y='3.5' width='12' height='14' rx='1.6'/><path d='M7.5 2.5v2M12.5 2.5v2M7 8.5h6M7 11.5h6M7 14.5h3.5'/>"),
+    "clipboard": _svg("<rect x='4.5' y='3.5' width='11' height='14' rx='1.6'/><path d='M7.5 3.5V2.8h5v.7M7.5 9.5l1.6 1.6 3.4-3.6M7.5 14h5'/>"),
+    "pulse": _svg("<path d='M2.5 10.5h3.2l2-5 3.6 9 2-4h4.2'/>"),
+    "history": _svg("<path d='M3.6 10a6.4 6.4 0 101.9-4.5L3.5 7.5'/><path d='M3.5 3.8v3.7h3.7M10 6.8V10l2.4 1.5'/>"),
 }
+
+# The brand mark: a clock whose hand is a lightning bolt. "The right hour to use power."
+LOGO = ("<svg class='rh-logo' width='36' height='36' viewBox='0 0 36 36' aria-hidden='true'>"
+        "<rect width='36' height='36' rx='9' fill='#14284B'/>"
+        "<circle cx='18' cy='18' r='11' fill='none' stroke='#fff' stroke-opacity='.9' stroke-width='2'/>"
+        "<path d='M18 7v2.6M18 26.4V29M7 18h2.6M26.4 18H29' stroke='#fff' stroke-opacity='.55' stroke-width='1.6' stroke-linecap='round'/>"
+        "<path d='M19.6 10.5l-5.4 8.3h4l-1.6 6.7 6.2-9h-4.1z' fill='#D9A21B'/></svg>")
 
 CSS = """
 <style>
@@ -222,6 +235,72 @@ svg.dg { width:100%; min-width:820px; height:auto; display:block; font-family: G
 .stButton button[kind="tertiary"] { border:0; box-shadow:none; background:transparent; color:var(--navy-60); font-size:13.5px; padding:0 2px; min-height:0; }
 .stButton button[kind="tertiary"]:hover:not(:disabled) { color:var(--navy); text-decoration:underline; transform:none; box-shadow:none; }
 div[data-testid="stSegmentedControl"] button { font-weight:550; }
+/* ---------- app shell: left menu, page headers, cards */
+section[data-testid="stSidebar"] > div { padding-top: .2rem; }
+.rh-brand { display:flex; align-items:center; gap:11px; padding:4px 4px 18px; margin-bottom:10px; border-bottom:1px solid var(--rule); }
+.rh-brand .n { font-size:18px; font-weight:650; color:var(--navy); letter-spacing:-.02em; line-height:1.15; }
+.rh-brand .s { font-size:12.5px; color:var(--muted); }
+.st-key-nav { gap:2px !important; }
+.st-key-nav button { justify-content:flex-start; gap:10px; background:transparent; border:0; box-shadow:none; color:var(--ink);
+   font-weight:500; padding:8px 12px; min-height:40px; border-radius:9px; }
+.st-key-nav button:hover:not(:disabled) { background:var(--navy-05); transform:none; box-shadow:none; color:var(--navy); }
+.st-key-nav button [data-testid="stIconMaterial"] { color:var(--navy-60); font-size:20px; }
+.st-key-nav [class*="st-key-navon_"] button { background:var(--navy-10); color:var(--navy); font-weight:650; }
+.st-key-nav [class*="st-key-navon_"] button [data-testid="stIconMaterial"] { color:var(--navy); }
+.st-key-nav button p { font-size:14.5px; }
+.st-key-nav button > div { justify-content:flex-start !important; width:100%; }
+.st-key-nav button [data-testid="stMarkdownContainer"] { text-align:left; }
+.rh-side { margin:18px 0 12px; padding:14px 14px 10px; background:var(--navy-05); border:1px solid var(--rule); border-radius:12px; }
+.rh-side .h { font-size:12px; color:var(--muted); font-weight:550; }
+.rh-side .v { font-size:14px; font-weight:600; color:var(--ink); line-height:1.35; margin:2px 0 10px; }
+.rh-side dl { display:grid; grid-template-columns:auto 1fr; gap:6px 12px; margin:0; font-size:13px; }
+.rh-side dt { color:var(--muted); } .rh-side dd { margin:0; color:var(--ink); text-align:right; font-variant-numeric:tabular-nums; }
+.rh-side .rh-tag { font-size:12px; padding:1px 7px; }
+.rh-ph { padding:4px 0 16px; }
+.rh-ph h1 { font-size:28px !important; font-weight:650 !important; letter-spacing:-.025em; margin:0 !important; padding:0 !important; line-height:1.2 !important; }
+.rh-ph p { color:var(--muted); font-size:15px; margin:4px 0 0; max-width:80ch; }
+.rh-ct { display:flex; align-items:flex-start; gap:11px; margin:0 0 12px; }
+.rh-ct .i { width:34px; height:34px; border-radius:9px; background:var(--navy-10); color:var(--navy); display:grid; place-items:center; flex:none; }
+.rh-ct .t { font-size:16px; font-weight:650; color:var(--ink); line-height:1.25; }
+.rh-ct .s { font-size:13px; color:var(--muted); line-height:1.4; margin-top:1px; }
+.rh-lead { max-width:78ch; margin:4px 0 10px; color:var(--ink); font-size:14.5px; line-height:1.55; }
+.rh-p { margin:0 0 6px; font-size:14.5px; line-height:1.55; color:var(--ink); }
+.rh-ok, .rh-alert { border-radius:10px; padding:11px 13px; font-size:14px; line-height:1.5; margin:0 0 10px; }
+.rh-ok { background:var(--green-bg); color:#1F4F37; } .rh-ok b { color:var(--green); }
+.rh-alert { background:var(--red-bg); color:#7A2219; } .rh-alert b { color:var(--red); }
+.rh-ok svg, .rh-alert svg { vertical-align:-4px; margin-right:6px; }
+.st-key-planbar { background:#fff; }
+.st-key-planbar [data-testid="stRadio"] label p { font-size:14px; }
+.st-key-decide { border-color:var(--navy-30) !important; }
+.rh-next, .rh-steps { margin-bottom:14px; }
+[data-testid="stFileUploaderDropzone"] { background:var(--navy-05); border:1.5px dashed var(--navy-30); border-radius:12px; padding:18px; }
+[data-testid="stFileUploaderDropzone"]:hover { border-color:var(--navy-60); background:var(--navy-10); }
+[data-testid="stVerticalBlockBorderWrapper"] > div { gap:.6rem; }
+/* ---------- control room: one box's process */
+.st-key-boxpanel { border-color:var(--navy-30) !important; }
+.st-key-boxpanel .rh-ct .t { font-size:18px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.rh-flow { list-style:none; margin:6px 0 16px; padding:0; display:grid; gap:0; }
+.rh-flow li { display:grid; grid-template-columns:34px 1fr; gap:12px; position:relative; padding:0 0 16px; }
+.rh-flow li:not(:last-child)::before { content:""; position:absolute; left:16px; top:30px; bottom:2px; width:2px; background:var(--navy-10); }
+.rh-flow .n { width:32px; height:32px; border-radius:50%; background:#fff; border:1.5px solid var(--navy-30); color:var(--navy);
+              display:grid; place-items:center; font-weight:650; font-size:14px; font-variant-numeric:tabular-nums; }
+.rh-flow li:last-child .n { background:var(--navy); border-color:var(--navy); color:#fff; }
+.rh-flow .t { font-size:15px; font-weight:650; color:var(--ink); line-height:1.3; padding-top:5px; }
+.rh-flow .d { font-size:14px; color:var(--muted); line-height:1.5; margin-top:2px; max-width:80ch; }
+.rh-flow .d b { color:var(--ink); } .rh-flow .d b.off { color:var(--red); }
+.rh-src2 { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1fr); gap:18px; padding:14px 16px; background:var(--navy-05);
+           border:1px solid var(--rule); border-radius:10px; font-size:13.5px; color:var(--muted); line-height:1.5; }
+.rh-src2 b { color:var(--ink); font-weight:600; } .rh-src2 ul { margin:4px 0 0; padding-left:18px; } .rh-src2 p { margin:2px 0 8px; }
+@media (max-width: 900px){ .rh-src2 { grid-template-columns:1fr; } }
+/* ---------- Ask RightHour: the floating button and the chat */
+.st-key-askfab { position:fixed; right:28px; bottom:26px; z-index:999990; width:auto !important; }
+.st-key-askfab button { min-height:52px; padding:0 22px 0 18px; border-radius:26px; font-size:15.5px; font-weight:650; gap:10px;
+   box-shadow:0 2px 4px rgba(12,26,51,.12), 0 14px 32px -10px rgba(12,26,51,.45); }
+.st-key-askfab button [data-testid="stIconMaterial"] { color:var(--amber); font-size:22px; }
+.st-key-askfab button:hover:not(:disabled) { transform:translateY(-2px); }
+[data-testid="stChatMessage"] { background:transparent; padding:6px 0; }
+[data-testid="stChatMessageAvatarAssistant"] { background:var(--navy); color:var(--amber); }
+@media (max-width: 700px){ .st-key-askfab { right:16px; bottom:16px; } }
 @media (prefers-reduced-motion: reduce){ *, *::before, *::after { animation:none !important; transition:none !important; } }
 </style>
 """

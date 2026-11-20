@@ -23,15 +23,18 @@ synthetic profile. `data/synthetic_in_uci_format.csv` tests the upload path.
 `llama-3.1-8b-instant` and T2 steps `llama-3.3-70b-versatile`. No extra package is needed. Without a key they run as
 offline templates and parsers, and every log row says which mode ran. Numbers never come from a language model in either mode.
 
-## The Manager console (the first screen)
+## The screens
 
-One page from which the plant manager runs everything. It reads left to right like the design diagram:
+The left menu has one screen per job:
 
-- **1 Inputs, what goes in:** meter data (steel file, sample, or your CSV; auto-scale), the live feed (hold back 7 days, release a day, `incoming/` folder), the day, goal and weather, today's production notes, price bands and contract demand, rooftop solar, and the language model.
-- **2 Telemetry, what the agents are doing:** this run's steps by tier (T0/T1/T2/human), model calls and spend, why the large model was used, data health, the forecast, the optimiser's schedule, guardrail results, the newest agent steps with their diagram box, and the live-feed log.
-- **3 Outputs, what comes out:** your decision (approve, edit, reject, or which rule to relax), saving and max demand against the contract, the work order, and the next-day check with what the agent learned and a savings history.
+- **Today:** pick the day, the solar forecast and the goal, press **Generate plan**. See the saving, the max demand, the schedule chart, and approve, edit or reject. The work order appears here after approval.
+- **Upload data:** meter readings (upload a CSV, or use the steel plant data or the sample), data health, the live feed, the day's production notes, and a new price order (paste it or upload a .txt).
+- **Plant setup:** machines and crew rules, prices and contract, rooftop solar, and the AI model.
+- **Control room:** the agents' design diagram, lit up from the run. Click a box. A panel opens with three tabs: **How it works** (its steps, filled in with this run's numbers), **Run log** (every step it took, with details) and **Controls** (change how it works). Weather, Forecast and Machines have an on/off switch. Forecast, Check and Optimiser have their own settings. Changes apply to the next plan.
+- **Next-day check:** compare the real meter readings with the approved plan, and see the savings history.
+- **History:** every agent step of this run, and the full audit trail.
 
-**Every panel links back to the clickable design diagram.** The small diagram at the top opens any box in the Control room with one click, and each panel's `↗` link opens its own box there: where its data comes from, what it did in this run, and its full settings. The Control room has a link back to the console. Status dots on the panels and on the diagram come from the same run log: green ran, red needs you, hollow not run yet.
+**Ask RightHour** (bottom right, on every screen) answers questions about the status, savings, history and the plan, from the facts in the app. With an AI key it uses the large model and can answer any question. Offline, plain code answers the common ones.
 
 ## How it maps to the doc
 

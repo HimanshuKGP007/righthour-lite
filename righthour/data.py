@@ -78,8 +78,8 @@ def load_uci_csv(path, scale: float | None = None) -> pd.DataFrame:
     return df
 
 
-def validate_load(df: pd.DataFrame) -> list[dict]:
-    """Data-quality checks: gaps, negatives, spikes, power-factor range."""
+def validate_load(df: pd.DataFrame, spike_x: float = 3.0, pf_min: float = 0.6) -> list[dict]:
+    """Data-quality checks: gaps, negatives, spikes, power-factor range. The two limits can be changed in the Control room."""
     issues = []
     if df.empty:
         return [{"level": "error", "text": "No meter rows found."}]
@@ -92,15 +92,15 @@ def validate_load(df: pd.DataFrame) -> list[dict]:
     # A plant swings from light night load to full day load, so "5x the median" flags normal shifts. A CT-ratio error
     # shows up as readings far above anything the plant normally draws: above 3x its 99th percentile.
     p99 = float(df["kw"].quantile(0.99))
-    spikes = int((df["kw"] > 3 * max(p99, 1)).sum())
+    spikes = int((df["kw"] > spike_x * max(p99, 1)).sum())
     if spikes:
-        issues.append({"level": "warning", "text": f"{spikes} readings above 3x the plant's 99th-percentile load (possible CT-ratio error)."})
-    bad_pf = (df["pf"] < 0.6) | (df["pf"] > 1.0)
+        issues.append({"level": "warning", "text": f"{spikes} readings above {spike_x:g}x the plant's 99th-percentile load (possible CT-ratio error)."})
+    bad_pf = (df["pf"] < pf_min) | (df["pf"] > 1.0)
     low_pf = int(bad_pf.sum())
     if low_pf:
         light = float((df.loc[bad_pf, "kw"] < df["kw"].median()).mean())
         where = ", mostly at light load" if light >= 0.7 else ""
-        issues.append({"level": "warning", "text": f"{low_pf:,} readings ({low_pf / len(df):.0%}) with power factor outside 0.6 to 1.0"
+        issues.append({"level": "warning", "text": f"{low_pf:,} readings ({low_pf / len(df):.0%}) with power factor outside {pf_min:g} to 1.0"
                                                    f"{where}; kVAh there is less certain."})
     if not issues:
         issues.append({"level": "ok", "text": f"{len(df):,} readings, no gaps or spikes."})
@@ -136,9 +136,11 @@ def day_actuals(df: pd.DataFrame, day: dt.date) -> pd.DataFrame | None:
     return sel.reset_index(drop=True) if len(sel) >= N_SLOTS else None
 
 
-def forecast_load(df: pd.DataFrame, bias: float = 1.0, target: dt.date | None = None) -> dict:
-    """Base load for the target day: mean of the same weekday over the 4 weeks before it (seasonal naive), times a
-    learned bias. Only readings from before the target day are used. No target means the day after the data ends."""
+def forecast_load(df: pd.DataFrame, bias: float = 1.0, target: dt.date | None = None, weeks: int = 4,
+                  method: str = "weekday") -> dict:
+    """Base load for the target day: mean of the same weekday over the `weeks` weeks before it (seasonal naive), times a
+    learned bias. method="recent" uses the last 7 days instead. Only readings from before the target day are used.
+    No target means the day after the data ends."""
     if target is not None:
         df = df[df["ts"] < pd.Timestamp(target)]
     kw = _day_matrix(df, "kw").dropna()
@@ -147,11 +149,14 @@ def forecast_load(df: pd.DataFrame, bias: float = 1.0, target: dt.date | None = 
         raise ValueError("No meter history before the chosen day.")
     last_day = kw.index.max()
     target = pd.Timestamp(target) if target is not None else last_day + pd.Timedelta(days=1)
-    same = kw[kw.index.dayofweek == target.dayofweek].tail(4)
-    method = "same weekday, last 4 weeks"
-    if len(same) < 2:
-        same = kw.tail(7)
-        method = "last 7 days"
+    if method == "recent":
+        same, method = kw.tail(7), "last 7 days"
+    else:
+        same = kw[kw.index.dayofweek == target.dayofweek].tail(weeks)
+        method = f"same weekday, last {weeks} week{'s' if weeks != 1 else ''}"
+        if len(same) < 2 and weeks > 1:
+            same = kw.tail(7)
+            method = "last 7 days"
     profile = (same.mean(axis=0) * bias).reindex(range(N_SLOTS)).interpolate().tolist()
     pf_prof = pf.tail(7).mean(axis=0).reindex(range(N_SLOTS)).fillna(0.95).tolist()
     return {"date": target.date(), "kw": profile, "pf": pf_prof, "method": method, "bias": bias,

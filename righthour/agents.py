@@ -63,6 +63,7 @@ class Context:
     notes: list | None = None            # the manager's notes for that day; None = the canned demo notes
     relaxation: str | None = None        # the manager's answer after an infeasible plan
     bias: float = 1.0                    # learned forecast correction
+    process: dict = field(default_factory=dict)   # how each box works, set in the Control room (see PROCESS_DEFAULTS)
     llm: LLMClient = field(default_factory=LLMClient)
     audit: AuditLog = field(default_factory=AuditLog)
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
@@ -295,6 +296,11 @@ def relaxation_options(ctx: Context, st: dict | None = None) -> list[dict]:
     return opts
 
 
+# How each box of the diagram works. The Control room changes these per session; each run records the values it used.
+PROCESS_DEFAULTS = {"weeks": 4, "method": "weekday", "use_learning": True, "solar_on": True, "spike_x": 3.0, "pf_min": 0.6,
+                    "time_limit_s": 20, "notes_on": True}
+
+
 def step_goal(ctx: Context, st: dict) -> dict:
     steps = st.setdefault("steps", [])
     ctx.log(steps, "Orchestrator", "orchestrate", reason="routine daily run: the small model picks the next tool",
@@ -306,13 +312,19 @@ def step_goal(ctx: Context, st: dict) -> dict:
 
 def step_data(ctx: Context, st: dict) -> dict:
     steps, agent = st["steps"], "Data & Forecast agent"
-    issues = D.validate_load(ctx.history)
-    ctx.log(steps, agent, "validate_data", detail={"source": ctx.history.attrs.get("source", ""), "issues": issues})
-    fc = D.forecast_load(ctx.history, bias=ctx.bias, target=ctx.plan_date)
+    p = {**PROCESS_DEFAULTS, **(ctx.process or {})}
+    issues = D.validate_load(ctx.history, spike_x=p["spike_x"], pf_min=p["pf_min"])
+    ctx.log(steps, agent, "validate_data", detail={"source": ctx.history.attrs.get("source", ""), "issues": issues,
+                                                    "spike_x": p["spike_x"], "pf_min": p["pf_min"]})
+    bias = ctx.bias if p["use_learning"] else 1.0
+    fc = D.forecast_load(ctx.history, bias=bias, target=ctx.plan_date, weeks=p["weeks"], method=p["method"])
     ctx.log(steps, agent, "forecast_load", detail={"method": fc["method"], "for": f"{fc['weekday']} {fc['date']}",
-                                                     "bias": round(ctx.bias, 4)})
+                                                     "bias": round(bias, 4), "learning_used": p["use_learning"]})
     s = ctx.site
-    pv = D.solar_forecast(s["rooftop_pv_kwp"], s["latitude"], s["longitude"], fc["date"], cloudy_override=ctx.cloudy)
+    if p["solar_on"]:
+        pv = D.solar_forecast(s["rooftop_pv_kwp"], s["latitude"], s["longitude"], fc["date"], cloudy_override=ctx.cloudy)
+    else:
+        pv = {"kw": [0.0] * len(fc["kw"]), "source": "Solar switched off in the Control room: no rooftop power counted"}
     ctx.log(steps, agent, "solar_forecast", detail={"source": pv["source"], "peak_kw": round(max(pv["kw"]), 1)})
     return {"forecast": fc, "pv": pv, "data_issues": issues}
 
@@ -331,6 +343,10 @@ def step_analysis(ctx: Context, st: dict) -> dict:
     ctx.log(steps, agent, "tariff_lookup", reason="tariff already in the shared library, so no model call",
             detail={"tariff": ctx.tariff["name"], "warnings": [i.text for i in issues]})
     fixed, extras = [], []
+    if not {**PROCESS_DEFAULTS, **(ctx.process or {})}["notes_on"]:
+        ctx.log(steps, agent, "constraint_parse", tier="T0", mode="code", reason="notes reader switched off in the Control room",
+                detail={"notes": "ignored"})
+        return {"tariff_issues": [i.__dict__ for i in issues], "fixed": [], "extra": []}
     if ctx.notes is None:                                   # the canned demo notes
         for n in ctx.machines_cfg.get("daily_notes", []):
             fixed.append(parse_note(ctx, n["text"], n["defaults"], steps))
@@ -367,7 +383,7 @@ def step_decide(ctx: Context, st: dict) -> dict:
         else:
             relax = o
     problem = build_problem(ctx, st, relax, drop)
-    plan = optimise_schedule(problem)
+    plan = optimise_schedule(problem, time_limit_s=int({**PROCESS_DEFAULTS, **(ctx.process or {})}["time_limit_s"]))
     ctx.log(st["steps"], "Orchestrator", "optimise",
             reason="the solver decides the schedule; the agent only chose to call it",
             detail={"status": plan["status"], "solver": "OR-Tools MILP", "relaxed": ctx.relaxation,

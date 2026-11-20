@@ -19,16 +19,17 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from righthour import architecture as ARCH
+from righthour import ask as ASK
 from righthour import config as CFG
 from righthour import data as D
 from righthour import live as LIVE
-from righthour.agents import Context, lakh, parse_tariff, rs, verify_and_learn
+from righthour.agents import PROCESS_DEFAULTS, Context, lakh, parse_tariff, rs, verify_and_learn
 from righthour.audit import AuditLog
 from righthour.graph import resume, start
 from righthour.llm import KEY_ENV, LABEL, PROVIDERS, LLMClient, default_provider, suggest_models
-from righthour.router import MODELS, PRICES, set_models, set_provider
+from righthour.router import MODELS, PRICES, cost_usd, set_models, set_provider
 from righthour.tariff import N_SLOTS, SLOTS_PER_HOUR, validate_tariff
-from righthour.theme import (AMBER, AMBER_TEXT, CSS, FONT, GREEN, ICONS, INK, MUTED, NAVY, NAVY_10, NAVY_30, NAVY_60, RED,
+from righthour.theme import (AMBER, AMBER_TEXT, CSS, FONT, GREEN, ICONS, INK, LOGO, MUTED, NAVY, NAVY_10, NAVY_30, NAVY_60, RED,
                              RULE)
 
 ROOT = Path(__file__).parent
@@ -64,6 +65,7 @@ ss.setdefault("trigger_plan", False)
 ss.setdefault("provider", default_provider())
 ss.setdefault("notes_ver", 0)
 ss.setdefault("sel_box", "orch")
+ss.setdefault("proc", dict(PROCESS_DEFAULTS))   # how each diagram box works; changed in the Control room
 ss.setdefault("scale_mode", True)
 ss.setdefault("live_active", False)       # live mode: the last days of the file are held back and arrive one by one
 ss.setdefault("live_future", [])
@@ -135,8 +137,17 @@ def check_approved_plan() -> None:
 # ------------------------------------------------------------------ run controls (shared by the sidebar and the Manager console)
 # The same controls appear in one place per screen: on the Manager console they sit in its Inputs column, on every other
 # screen in the sidebar. Their values live in session state, so they survive moving between screens.
-VIEWS = ["Manager console", "Plan", "Control room", "Agent log", "Audit trail"]
-ss.setdefault("view", "Manager console")
+# The left menu: one screen per job. Name, Material icon, what the screen is for.
+NAV = [("Today", ":material/today:", "Plan the day, see the saving, approve"),
+       ("Upload data", ":material/upload_file:", "Meter readings, production notes, price orders"),
+       ("Plant setup", ":material/precision_manufacturing:", "Machines, crew rules, prices, solar, AI model"),
+       ("Control room", ":material/account_tree:", "The agents' diagram, box by box"),
+       ("Next-day check", ":material/fact_check:", "Real saving against the plan"),
+       ("History", ":material/history:", "Every agent step and decision")]
+VIEWS = [n for n, _, _ in NAV]
+OLD_VIEW = {"Manager console": "Today", "Plan": "Today", "Agent log": "History", "Audit trail": "History"}
+ss.setdefault("view", "Today")
+ss.view = OLD_VIEW.get(ss.view, ss.view) if ss.view not in VIEWS else ss.view
 ss.setdefault("w_weather", "Live forecast")
 ss.setdefault("w_goal", "Cut tomorrow's bill without disrupting production.")
 ss.setdefault("w_live", False)
@@ -197,20 +208,23 @@ elif not ss.w_live and ss.live_active:
 auto_adv, adv_s, plan_at, auto_plan = ss.w_auto_adv, ss.w_adv_s, ss.w_plan_at, ss.w_auto_plan
 
 
-def run_controls(where: str) -> None:
-    """Every control that runs the day. `where` is 'side' or 'console'; only one is drawn per screen."""
-    btn_key = "go_btn" if where == "side" else "go_btn_c"
-    if d_range:
-        st.date_input("Plan for", min_value=d_range[0], max_value=d_range[2], key="w_plan_day",
-                      help="The agent forecasts this day from the 4 same weekdays before it. Days inside the meter file can be replayed "
-                           "and checked against the real readings. The day after the file ends is 'tomorrow'.")
-        html(f"<div class='rh-note'>{'Replay: the meter file holds this day, so the next-day check can use its real readings.' if has_actuals else 'Tomorrow: no readings yet. They arrive later and the check runs then.'}</div>")
-    elif d_err:
-        st.error(d_err)
-    st.radio("Solar forecast", list(WEATHER), horizontal=True, key="w_weather",
-             help="Live forecast asks Open-Meteo for the day's sunshine (recorded data for past days). Falls back to a clear-sky model if offline.")
-    st.text_area("Goal for the agent", height=70, key="w_goal")
-    st.button("Generate plan", type="primary", width="stretch", disabled=ss.hist is None or plan_date is None, key=btn_key)
+def run_controls() -> None:
+    """The plan bar on Today: which day, the solar forecast, the goal, and the button that runs the agents."""
+    with st.container(border=True, key="planbar"):
+        c1, c2, c3, c4 = st.columns([1, 1, 2.4, 0.95], vertical_alignment="bottom", gap="small")
+        if d_range:
+            c1.date_input("Plan for", min_value=d_range[0], max_value=d_range[2], key="w_plan_day",
+                          help="The agent forecasts this day from the 4 same weekdays before it. Days inside the meter file can be replayed "
+                               "and checked against the real readings. The day after the file ends is 'tomorrow'.")
+        elif d_err:
+            c1.error(d_err)
+        c2.selectbox("Solar forecast", list(WEATHER), key="w_weather",
+                 help="Live forecast asks Open-Meteo for the day's sunshine (recorded data for past days). Falls back to a clear-sky model if offline.")
+        c3.text_input("Goal for the agent", key="w_goal")
+        c4.button("Generate plan", type="primary", icon=":material/play_arrow:", width="stretch",
+                  disabled=ss.hist is None or plan_date is None, key="go_btn_c")
+        if d_range:
+            html(f"<div class='rh-note' style='margin-top:-4px'>{'Replay day: the meter file holds this day, so the next-day check can use its real readings.' if has_actuals else 'Tomorrow: no readings yet. They arrive later and the check runs then.'}</div>")
 
 
 def live_controls() -> None:
@@ -304,28 +318,6 @@ def goto(view: str, box: str | None = None) -> None:
         ss.hld_room_nonce = ss.get("hld_room_nonce", 0) + 1   # a fresh diagram, so it opens on this box
 
 
-with st.sidebar:
-    html(f"<div style='display:flex;align-items:center;gap:10px;margin-bottom:4px'><div class='rh-mark' style='width:30px;height:30px;border-radius:8px'>"
-         f"{ICONS['clock']}</div><div><div style='font-size:17px;font-weight:650;color:{NAVY};letter-spacing:-.02em'>RightHour Lite</div>"
-         f"<div class='rh-note'>Day-ahead ToD bill optimiser</div></div></div>")
-    if ss.view == "Manager console":
-        html("<div class='rh-card panel' style='margin-top:14px'><h4>How to read this screen</h4>"
-             "<p class='rh-note'><span class='rh-tag ok'>Done</span> the step ran.<br><span class='rh-tag ask'>Your turn</span> a person must act.</p>"
-             "<p class='rh-note' style='margin-top:10px'><b>Who did each step</b><br>"
-             "<span class='rh-chip t0'>T0</span> plain code. No AI.<br><span class='rh-chip t1'>T1</span> small AI model.<br>"
-             "<span class='rh-chip t2'>T2</span> large AI model, only when needed.<br><span class='rh-chip human'>human</span> a person.</p>"
-             "<p class='rh-note' style='margin-top:10px'>The AI never makes a number. Code does the maths. Code checks every sentence.</p></div>")
-    else:
-        st.subheader("The day to plan", divider="gray")
-        run_controls("side")
-        st.subheader("Live mode", divider="gray")
-        live_controls()
-        if ss.live_log:
-            html("<div class='rh-note' style='margin-top:6px'>" + "<br>".join(ss.live_log[:5]) + "</div>")
-        st.subheader("Language model", divider="gray")
-        model_controls()
-
-
 # the live tick: while live mode is on, look for new readings every few seconds
 def _live_tick() -> None:
     changed = False
@@ -373,9 +365,10 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
     with st.spinner("Agents working: forecasting, reading the tariff, solving..."):
         try:
             ctx = Context(SITE, ss.tariff, MACH, ss.hist, goal=goal or "Cut tomorrow's bill.", cloudy=WEATHER[weather], plan_date=plan_date,
-                          notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit)
+                          notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process=dict(ss.proc))
             graph, cfg, state, pending = start(ctx)
-            ss.run = {"ctx": ctx, "graph": graph, "cfg": cfg, "state": state, "pending": pending, "cfg_version": ss.cfg_version}
+            ss.run = {"ctx": ctx, "graph": graph, "cfg": cfg, "state": state, "pending": pending, "cfg_version": ss.cfg_version,
+                      "proc": dict(ss.proc)}
             ss.verify = None if not (ss.approved and ss.verify and ss.verify.get("_run") == ctx.run_id) else ss.verify
         except Exception as e:  # noqa: BLE001
             ss.run, run_error = None, f"No plan could be made: {e}"
@@ -390,11 +383,26 @@ def do_resume(value) -> None:
         ss.verify = None
 
 
-# ------------------------------------------------------------------ header
-html(f"""<div class='rh-top'><div class='rh-mark'>{ICONS['clock']}</div>
-<div><div class='name'>RightHour Lite</div>
-<div class='sub'>Tells a factory when to run its machines so the power bill goes down</div></div>
-<div class='site'><b>{escape(str(SITE['name']))}</b><br>{escape(str(ss.tariff['name']))}</div></div>""")
+# ------------------------------------------------------------------ the left menu
+def sidebar() -> None:
+    asking = bool(ss.run and ss.run.get("pending"))
+    with st.sidebar:
+        html(f"<div class='rh-brand'>{LOGO}<div><div class='n'>RightHour</div><div class='s'>Power bill planner</div></div></div>")
+        with st.container(key="nav"):
+            for name, icon, hint in NAV:
+                on = ss.view == name
+                label = f"{name}  ·  your turn" if name == "Today" and asking else name
+                st.button(label, icon=icon, key=f"{'navon' if on else 'nav'}_{name}", width="stretch", on_click=goto, args=(name,))
+        h = ss.hist
+        days = LIVE.describe_feed(h)["n_full_days"] if h is not None else 0
+        live = f"<span class='rh-tag ok'>on, {len(ss.live_future)} days to come</span>" if ss.live_active else "<span class='rh-tag'>off</span>"
+        rows = [("Meter data", f"{days} days" if h is not None else "none yet"),
+                ("Plan for", f"{plan_date:%a %d %b %Y}" if plan_date else "not set"),
+                ("AI", escape(LLM.label)), ("Live feed", live)]
+        html(f"<div class='rh-side'><div class='h'>Plant</div><div class='v'>{escape(str(SITE['name']))}</div><dl>"
+             + "".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in rows) + "</dl></div>")
+        st.button("Generate plan", type="primary", icon=":material/play_arrow:", width="stretch", key="go_btn",
+                  disabled=ss.hist is None or plan_date is None, help="Runs the agents for the day set on Today.")
 
 
 # ------------------------------------------------------------------ the agentic pipeline
@@ -561,18 +569,6 @@ def save_cfg(**updates) -> None:
     st.rerun()
 
 
-def provenance(eid: str, rows: list[dict]) -> None:
-    """The top of every pane: what the box does, where its information comes from, and what it did in this run."""
-    info = ARCH.info(eid)
-    got = ARCH.BY_ID[eid][4] if eid in ARCH.BY_ID else set()
-    mine = [r for r in rows if r["action"] in got]
-    src = "".join(f"<li>{x}</li>" for x in info.get("comes_from", []))
-    last = (f"{len(mine)} step{'s' if len(mine) != 1 else ''} in this run, last at {mine[-1]['ts'][11:]} ({mine[-1]['mode']})" if mine else "Not run yet in this run.")
-    html(f"<div class='rh-card panel'><h4>{ICONS['chip']}{info.get('title', eid)}</h4><p>{info.get('what', '')}</p>"
-         f"<p class='rh-note' style='margin:8px 0 2px'><b>Where its information comes from</b></p><ul class='rh-src'>{src}</ul>"
-         f"<p class='rh-note'>Code: <span class='mono'>{info.get('code', '')}</span> &nbsp;·&nbsp; Gives: {info.get('produces', '')}<br>{last}</p></div>")
-
-
 def step_rows(actions: set[str], rows: list[dict]) -> None:
     mine = [r for r in rows if r["action"] in actions]
     if not mine:
@@ -646,9 +642,14 @@ def pane_meters(rows) -> None:
 
 # ---- factory systems: the day's notes, the machines, the crew rules
 def pane_factory(rows) -> None:
-    html(f"<p style='max-width:74ch;margin:6px 0 4px'><b>Notes for {plan_date:%A %d %B %Y}.</b> Write what the supervisor would say. "
+    notes_editor()
+    pane_machines()
+
+
+def notes_editor() -> None:
+    html(f"<p class='rh-lead'><b>Notes for {plan_date:%A %d %B %Y}.</b> Write what the supervisor would say. "
          f"A <b>Fixed batch</b> must run at its stated hours. A <b>New order</b> is placed by the agent inside the hours you state. "
-         f"{'Groq and Claude read free wording.' if LLM.live else 'Offline mode reads simple notes: kW, hours, from 10 am to 4 pm, starts at 9 am, finished by 5 pm. Pick Groq or Claude in the sidebar for free wording.'}</p>"
+         f"{'The AI model reads free wording.' if LLM.live else 'Offline mode reads simple notes: kW, hours, from 10 am to 4 pm, starts at 9 am, finished by 5 pm. Pick an AI model in Plant setup for free wording.'}</p>"
          if plan_date else "")
     df = st.data_editor(pd.DataFrame(ss.notes_rows, columns=NOTE_COLS), num_rows="dynamic", hide_index=True, width="stretch", key=f"notes{ss.notes_ver}",
                         column_config={"Kind": st.column_config.SelectboxColumn(options=["Fixed batch", "New order"], required=True, default="New order"),
@@ -657,10 +658,13 @@ def pane_factory(rows) -> None:
                                                                                                help="Optional. If there is no valid plan, the manager could start this order this early."),
                                        "Could finish as late as": st.column_config.NumberColumn(min_value=1, max_value=24, step=1)})
     ss.notes_rows = df.to_dict("records")
-    if st.button("Add the example grinding order", help="A 400 kW order that does not fit the usual schedule. Shows what happens when rules conflict."):
+    if st.button("Add the example grinding order", icon=":material/add:", help="A 400 kW order that does not fit the usual schedule. Shows what happens when rules conflict."):
         ss.notes_rows = ss.notes_rows + [dict(EXAMPLE_ORDER)]
         ss.notes_ver += 1
         st.rerun()
+
+
+def pane_machines() -> None:
     cfg = ss.cfg
     st.markdown("**Machines that can move**")
     html("<div class='rh-note' style='margin-bottom:6px'>Each machine runs once a day for its hours, anywhere inside its window. <b>Usual start</b> is when it runs today; "
@@ -728,7 +732,11 @@ def pane_orders(rows) -> None:
     st.markdown("The Tariff agent drafts the price bands once on the large model, checks them, and waits for a person to sign off before any plan uses them.")
     sample = ("MERC order (sample text). 00:00 to 09:00 normal hours: Rs 8.79 per kVAh. 09:00 to 17:00 solar hours: "
               "Rs 7.03 per kVAh. 17:00 to 24:00 peak hours: Rs 10.55 per kVAh. Demand charge Rs 600 per kVA per month.")
-    txt = st.text_area("Tariff order text", sample, height=110)
+    up = st.file_uploader("Upload the order as a text file", type=["txt", "md"], key="tariff_file",
+                          help="Plain text copied from the regulator's order. Or paste it in the box below.")
+    if up is not None:
+        sample = up.getvalue().decode("utf-8", errors="replace")
+    txt = st.text_area("Tariff order text", sample, height=110, key=f"tariff_txt_{up.file_id if up else 'sample'}")
     if st.button("Read this order"):
         steps: list = []
         tctx = Context(SITE, ss.tariff, MACH, ss.hist, llm=LLM, audit=ss.audit)
@@ -763,7 +771,6 @@ def pane_weather(rows) -> None:
     site["longitude"] = c.number_input("Longitude", -180.0, 180.0, float(site["longitude"]), 0.01, key=f"lon{v}")
     if st.button("Save solar settings", type="primary"):
         save_cfg(site=site)
-    html("<div class='rh-note'>Choose live forecast, clear sky or a cloudy day in the sidebar.</div>")
     if state.get("pv"):
         fig = go.Figure(go.Scatter(x=[k / SLOTS_PER_HOUR for k in range(N_SLOTS)], y=state["pv"]["kw"], fill="tozeroy", line=dict(color=AMBER, width=2), name="Solar kW"))
         fig.update_layout(height=200, margin=dict(l=8, r=8, t=8, b=8), paper_bgcolor="#fff", plot_bgcolor="#fff", font=dict(family=FONT, size=12),
@@ -781,7 +788,6 @@ def pane_collect(rows) -> None:
     if st.button("Reset learned correction"):
         ss.bias = 1.0
         st.rerun()
-    step_rows({"forecast_load", "solar_forecast"}, rows)
 
 
 def pane_check(rows) -> None:
@@ -789,7 +795,6 @@ def pane_check(rows) -> None:
         return
     for i in state.get("data_issues", []):
         html(f"<div class='rh-note'><span class='rh-chip {'ok' if i['level'] == 'ok' else 'warn'}'>{i['level']}</span>{i['text']}</div>")
-    step_rows({"validate_data"}, rows)
 
 
 def pane_store(rows) -> None:
@@ -803,8 +808,7 @@ def pane_store(rows) -> None:
 def pane_orch(rows) -> None:
     if need_run("The orchestrator's steps come from the run."):
         return
-    html(f"<div class='rh-note'>Goal: <b>{state.get('goal', '')}</b>. Day: <b>{state['forecast']['date']}</b>. Model: <b>{LLM.label}</b>. Change these in the sidebar.</div>")
-    step_rows({"orchestrate", "replan", "explain"}, rows)
+    html(f"<div class='rh-note'>Goal: <b>{state.get('goal', '')}</b>. Day: <b>{state['forecast']['date']}</b>. Model: <b>{LLM.label}</b>. Change these on the Today screen.</div>")
 
 
 def pane_price(rows) -> None:
@@ -812,7 +816,6 @@ def pane_price(rows) -> None:
     html("<table class='rh-log'><thead><tr><th>Band</th><th>Hours</th><th class='r'>₹ per kVAh</th></tr></thead><tbody>" + "".join(
         f"<tr><td>{s['type']}</td><td>{s['start_h']:02d}:00 to {s['end_h']:02d}:00</td><td class='r'>{s['rate']:.2f}</td></tr>" for s in t["slots"])
          + f"</tbody></table><div class='rh-note' style='margin-top:6px'>Demand charge ₹{t['demand_charge_per_kva_month']} per kVA per month. Edit in the <b>Power bill</b> box.</div>")
-    step_rows({"tariff_lookup", "tariff_parse"}, rows)
 
 
 def pane_forecast(rows) -> None:
@@ -833,8 +836,7 @@ def pane_rules(rows) -> None:
     if need_run("The rules read from your notes come from the run."):
         return
     html(read_back(state))
-    step_rows({"constraint_parse"}, rows)
-    html("<div class='rh-note'>Edit the notes in the <b>Factory systems</b> box.</div>")
+    html("<div class='rh-note'>Edit the notes in <b>Upload data</b>.</div>")
 
 
 # ---- optimiser, guardrails
@@ -854,7 +856,6 @@ def pane_opt(rows) -> None:
         html(f"<table class='rh-log'><thead><tr><th>Machine</th><th class='r'>kW</th><th>Allowed window</th><th>Usual start</th><th>Planned start</th></tr></thead><tbody>{body}</tbody></table>"
              f"<div class='rh-note' style='margin-top:6px'>{plan.get('solver', '')}. Cost for the day {rs(plan['total_rs'])}, peak {plan['peak_kva']:.0f} kVA. "
              "The solver decides the schedule; no language model is involved.</div>")
-    step_rows({"optimise"}, rows)
 
 
 def pane_guard(rows) -> None:
@@ -864,7 +865,6 @@ def pane_guard(rows) -> None:
     html("".join(f"<p style='margin:4px 0'><span class='rh-chip {'ok' if c['ok'] else ('bad' if c['hard'] else 'warn')}'>{'pass' if c['ok'] else ('fail' if c['hard'] else 'note')}</span>{c['rule']}</p>" for c in checks)
          or "<div class='rh-note'>No plan to check yet.</div>")
     html(f"<div class='rh-note' style='margin-top:8px'>Rules that can never be relaxed: " + "; ".join(r["text"] for r in MACH["rules"] if r["hard"]) + ".</div>")
-    step_rows({"policy_check"}, rows)
 
 
 # ---- the manager
@@ -877,7 +877,6 @@ def pane_manager(rows) -> None:
         approval_controls("pane")
     else:
         html(f"<div class='rh-note'>Status: <b>{state.get('status', '')}</b>. Nothing is waiting for you.</div>")
-    step_rows({"relax_rule", "work_order", "reject"}, rows)
 
 
 def pane_runs(rows) -> None:
@@ -892,7 +891,7 @@ def pane_runs(rows) -> None:
 
 def pane_loop_no(rows) -> None:
     rej = [r for r in ss.audit.rows() if r["action"] == "reject"]
-    html(f"<div class='rh-note'>{len(rej)} plan(s) rejected so far. A rejection is recorded with its reason. <b>Turning a rejection into a new rule is not built yet</b>: today a person adds the rule in the Factory systems box.</div>")
+    html(f"<div class='rh-note'>{len(rej)} plan(s) rejected so far. A rejection is recorded with its reason. <b>Turning a rejection into a new rule is not built yet</b>: today a person adds the rule in Plant setup.</div>")
     if rej:
         html("<table class='rh-log'><thead><tr><th>Time</th><th>Reason</th></tr></thead><tbody>" + "".join(f"<tr><td class='m'>{r['ts'][:16]}</td><td>{escape(str(r['reason']))}</td></tr>" for r in rej) + "</tbody></table>")
 
@@ -950,25 +949,231 @@ def pane_loop_day(rows) -> None:
                 st.toast(f"Forecast correction set to x{ss.bias:.3f}")
 
 
+# ---- the router and the factory memory
+def pane_router(rows) -> None:
+    html("<table class='rh-log'><thead><tr><th>Step</th><th>Goes to</th></tr></thead><tbody>"
+         "<tr><td>Forecast, solar, tariff lookup, optimiser, rule checks, next-day check</td><td><span class='rh-chip t0'>T0</span>plain code. Never a model.</td></tr>"
+         "<tr><td>Reading notes, writing the explanation, choosing the next step</td><td><span class='rh-chip t1'>T1</span>small model</td></tr>"
+         "<tr><td>A new tariff order; a small-model answer that fails its check twice; no plan fits the rules</td><td><span class='rh-chip t2'>T2</span>large model</td></tr>"
+         "</tbody></table>")
+    st.markdown("**Which models**")
+    model_controls()
+
+
+def pane_memory(rows) -> None:
+    rej = [r for r in ss.audit.rows() if r["action"] == "reject"]
+    saves = [r for r in ss.audit.rows() if r["action"] == "setup_saved"]
+    html(f"<div class='rh-kv three'><div><b>x{ss.bias:.3f}</b>learned forecast correction</div><div><b>{len(rej)}</b>rejected plans on record</div>"
+         f"<div><b>{len(saves)}</b>setup changes saved</div></div>")
+    if ss.bias != 1.0 and st.button("Forget the learned correction", icon=":material/restart_alt:", key="mem_reset"):
+        ss.bias = 1.0
+        st.rerun()
+
+
+# ---- how each box works: its steps, filled in from this run
+def _flow(eid: str) -> list[tuple[str, str]]:
+    s, p, site = state or {}, ss.proc, ss.cfg["site"]
+    h = ss.hist
+    fc, pv, plan = s.get("forecast"), s.get("pv"), s.get("plan") or {}
+    feed = LIVE.describe_feed(h) if h is not None else None
+    notes = notes_for_run()
+    off = lambda key, what: f"<b class='off'>Switched off.</b> {what}" if not p[key] else None  # noqa: E731
+    if eid == "meters":
+        return [("Reads the meter file", escape(str(h.attrs.get("source", ""))) if h is not None else "No file loaded yet."),
+                ("Puts readings on a 15-minute grid", "Missing slots are filled from the readings on each side."),
+                ("Scales the load to this plant", f"x{h.attrs.get('scale', 1):.2f}" if h is not None else "Waiting for data."),
+                ("Hands the readings to 1 Collect", f"{feed['n_rows']:,} readings, {feed['n_full_days']} full days, last at {str(feed['last_ts'])[:16]}." if feed else "Nothing yet.")]
+    if eid == "check":
+        issues = s.get("data_issues") or (D.validate_load(h, p["spike_x"], p["pf_min"]) if h is not None else [])
+        return [("Looks for gaps", "Counts missing 15-minute readings between the first and last reading."),
+                ("Looks for negative readings", "A negative load means a meter wired the wrong way round."),
+                ("Looks for spikes", f"Flags readings above <b>{p['spike_x']:g}x</b> the plant's 99th-percentile load."),
+                ("Checks power factor", f"Flags readings with power factor outside <b>{p['pf_min']:g} to 1.0</b>."),
+                ("Reports", "<br>".join(f"<span class='rh-chip {'ok' if i['level'] == 'ok' else 'warn'}'>{i['level']}</span>{i['text']}" for i in issues) or "Nothing checked yet.")]
+    if eid == "collect":
+        return [("Takes the meter history", f"Every reading before {plan_date:%d %b %Y}." if plan_date else "Waiting for data."),
+                ("Takes the price bands", escape(str(ss.tariff["name"]))),
+                ("Takes the day's production notes", f"{len(notes)} note(s)" + (" (reader switched off)" if not p["notes_on"] else "")),
+                ("Takes the weather setting", f"{ss.w_weather}" + ("" if p["solar_on"] else " (solar switched off)")),
+                ("Hands one bundle to the agents", "Starts when you press Generate plan.")]
+    if eid == "store":
+        return [("Writes every step", "Who did it, which tier, which model, why, what it cost."),
+                ("Keeps it in one file per plant", f"<span class='mono'>righthour_audit.sqlite</span>, {len(ss.audit.rows())} rows so far."),
+                ("Lets anyone replay a run", "Every row has the run id and the step's full details.")]
+    if eid == "orch":
+        return [("Reads your goal", f"“{escape(str(s.get('goal') or ss.w_goal))}”"),
+                ("Plans the steps", "Gather data → forecast → read prices → read notes → optimise → check rules → explain → ask you."),
+                ("Calls each tool in turn", f"{len(_run_rows())} steps logged in this run." if run else "Not run yet."),
+                ("Plans again if a step fails", "No plan fits? It tests each flexible rule and asks you which one to relax."),
+                ("Asks you to approve", f"Status now: <b>{escape(str(s.get('status', 'no plan yet')))}</b>.")]
+    if eid in ("price", "bill"):
+        bands = ", ".join(f"{b['type']} {b['start_h']:02d}–{b['end_h']:02d} h ₹{b['rate']:.2f}" for b in ss.tariff["slots"])
+        warns = [i.text for i in validate_tariff(ss.tariff) if i.level == "warning"]
+        return [("Looks up the plant's tariff", f"{escape(str(ss.tariff['name']))}. From the library, so no model call."),
+                ("Reads the price bands", bands),
+                ("Reads the demand charge", f"₹{ss.tariff['demand_charge_per_kva_month']:,.0f} per kVA per month; contract {site['contract_demand_kva']} kVA."),
+                ("Checks them against the regulator's rules", f"{len(warns)} warning(s)." + (f" First: {warns[0]}" if warns else ""))]
+    if eid == "orders":
+        return [("Reads the order text", "Pasted or uploaded in Upload data."),
+                ("Drafts the price bands", "Large model, once per new order. Offline mode uses a fixed reader."),
+                ("Checks the draft", "Bands must cover 24 hours with no overlap; rates must be positive."),
+                ("Waits for a person", "Nothing uses the new prices until someone signs them off."),
+                ("Adds it to the library", f"{len(ss.library)} signed-off order(s) in the library.")]
+    if eid == "forecast":
+        meth = "the last 7 days" if p["method"] == "recent" else f"the same weekday over the last {p['weeks']} weeks"
+        return [("Picks past days", f"Takes {meth} before the plan day."),
+                ("Averages them slot by slot", "One value for each 15-minute slot of the day."),
+                ("Applies the learned correction", off("use_learning", "The correction is not used (x1.000).") or f"x{ss.bias:.3f}, learned from next-day checks."),
+                ("Result", f"{fc['weekday']} {fc['date']}: peak {max(fc['kw']):,.0f} kW, {sum(fc['kw']) / SLOTS_PER_HOUR:,.0f} kWh in the day ({fc['method']})." if fc else "Appears after a run.")]
+    if eid == "weather":
+        if not p["solar_on"]:
+            return [("Solar", off("solar_on", "The plan counts no rooftop power. Turn it on to use the weather forecast."))]
+        return [("Asks for the day's sunshine", f"Open-Meteo at {site['latitude']}, {site['longitude']}. Setting: <b>{ss.w_weather}</b>."),
+                ("Falls back if offline", "A clear-sky model for the site, so a plan is always possible."),
+                ("Turns sunshine into kW", f"For {site['rooftop_pv_kwp']} kWp of rooftop panels."),
+                ("Result", f"Peak {max(pv['kw']):.0f} kW, {sum(pv['kw']) / SLOTS_PER_HOUR:,.0f} kWh in the day. Source: {escape(str(pv['source']))}." if pv else "Appears after a run.")]
+    if eid in ("rules", "factory"):
+        if not p["notes_on"]:
+            return [("Production notes", off("notes_on", "Notes are ignored. Fixed batches and new orders are not planned."))]
+        nf, ne = len(s.get("fixed") or []), len(s.get("extra") or [])
+        return [("Takes the day's notes", f"{len(notes)} note(s) from Upload data."),
+                ("Reads each note", f"{escape(LLM.label)}. It finds kW, hours and the allowed window."),
+                ("Checks what it read", "Hours must be 0 to 24 and the window long enough. A failed read is tried again, then sent to the large model."),
+                ("Result", f"{nf} fixed batch(es), {ne} new order(s)." if run else "Appears after a run.")]
+    if eid == "opt":
+        prob = s.get("problem") or {}
+        moved = sum(1 for m in prob.get("shiftable", []) if m.get("baseline_start_h") is not None and plan.get("schedule", {}).get(m["id"]) not in (None, m["baseline_start_h"]))
+        return [("Takes the inputs", f"{len(prob.get('shiftable', MACH['shiftable']))} machines that can move, their windows and crew rules, the forecast, solar and prices."),
+                ("Sets the goal", "The lowest bill for the day: energy cost in each slot plus any new peak demand."),
+                ("Keeps every hard rule", f"Contract demand {site['contract_demand_kva']} kVA, machine windows, crew rules, fixed batches."),
+                ("Solves", f"OR-Tools MILP, time limit {p['time_limit_s']} s. Starts on the hour. No language model."),
+                ("Result", f"{plan.get('status', '')}: {moved} machine(s) moved, cost {rs(plan['total_rs'])}, peak {plan['peak_kva']:.0f} kVA." if plan.get("total_rs") is not None else "Appears after a run.")]
+    if eid == "guard":
+        checks = (s.get("policy") or {}).get("checks", [])
+        return [("Takes the plan", "The schedule from the optimiser, or your edited one."),
+                ("Checks every rule again, in plain code", "Windows, crew rules, fixed batches, contract demand, this month's max."),
+                ("Blocks a plan that breaks a hard rule", "An edit that breaks one cannot be approved."),
+                ("Result", f"{sum(c['ok'] for c in checks)} of {len(checks)} passed." if checks else "Appears after a run.")]
+    if eid == "router":
+        return [("Looks at each step", "Is it maths, or words?"),
+                ("Maths and checks go to code", "Tier T0. A model never makes a number."),
+                ("Routine words go to the small model", f"{escape(LLM.label)}."),
+                ("Hard cases go to the large model", "A failed check twice, a new tariff order, or no plan fits."),
+                ("Logs the choice and the cost", f"{sum(1 for r in _run_rows() if r['tier'] in ('T1', 'T2'))} model step(s) in this run.")]
+    if eid == "memory":
+        return [("Keeps the machine profiles and rules", "From Plant setup."),
+                ("Keeps the learned correction", f"x{ss.bias:.3f}" + ("" if p["use_learning"] else " (not used: switched off in Forecast)")),
+                ("Keeps every “no” with its reason", f"{sum(r['action'] == 'reject' for r in ss.audit.rows())} on record.")]
+    if eid == "manager":
+        return [("Gets the plan, the saving and the reasons", "On the Today screen."),
+                ("Decides", "Approve, edit the start times, reject with a reason, or pick which rule to relax."),
+                ("Every choice is logged", "Who, when and why, in the audit store."),
+                ("Now", "Waiting for you." if pending else f"Status: {escape(str(s.get('status', 'no plan yet')))}.")]
+    if eid == "runs":
+        return [("Turns the approved plan into a work order", "Start and end for each machine."),
+                ("People run the machines", "RightHour never switches equipment."),
+                ("Now", "Work order issued." if ss.approved else "No approved plan yet.")]
+    if eid == "loop_day":
+        return [("Waits for the day's real readings", "From the meter file, an upload, or the live feed."),
+                ("Asks what actually ran", "Any machine that started at a different hour."),
+                ("Measures the real saving", "Meter readings against the usual schedule, adjusted for what ran."),
+                ("Learns", "Moves the forecast correction toward what really happened."),
+                ("Now", f"Verified {rs(ss.verify['verified_saving_rs'])}." if ss.verify else ("Ready to check." if ss.approved else "Approve a plan first."))]
+    i = ARCH.info(eid)
+    return [("What it does", i.get("what", "")), ("Gives", i.get("produces", ""))]
+
+
+# the on/off switch on boxes that can be left out of a run
+SWITCH = {"weather": ("solar_on", "Use rooftop solar", "Off: the plan counts no solar power."),
+          "forecast": ("use_learning", "Use the learned correction", "Off: the forecast is the plain average of past days."),
+          "rules": ("notes_on", "Read the day's production notes", "Off: notes are ignored, so batches and orders are not planned."),
+          "factory": ("notes_on", "Read the day's production notes", "Off: notes are ignored, so batches and orders are not planned.")}
+
+
+def box_controls(eid: str) -> None:
+    """Knobs that change how this box works. They apply to the next plan."""
+    p = ss.proc
+    if eid == "forecast":
+        c1, c2 = st.columns(2)
+        meth = c1.radio("Which past days", ["Same weekday", "Last 7 days"], index=0 if p["method"] == "weekday" else 1, horizontal=True, key="pk_method")
+        p["method"] = "weekday" if meth == "Same weekday" else "recent"
+        p["weeks"] = c2.slider("Weeks of the same weekday", 1, 8, int(p["weeks"]), key="pk_weeks", disabled=p["method"] == "recent")
+    elif eid == "check":
+        c1, c2 = st.columns(2)
+        p["spike_x"] = c1.slider("Spike limit (times the 99th-percentile load)", 1.5, 6.0, float(p["spike_x"]), 0.5, key="pk_spike")
+        p["pf_min"] = c2.slider("Lowest normal power factor", 0.3, 0.95, float(p["pf_min"]), 0.05, key="pk_pf")
+    elif eid == "opt":
+        p["time_limit_s"] = st.slider("Solver time limit (seconds)", 5, 120, int(p["time_limit_s"]), 5, key="pk_time",
+                                      help="Longer can find a cheaper plan on a big problem. This plant solves in under a second.")
+    elif eid == "orch":
+        st.text_input("Goal for the agent", key="w_goal")
+        st.selectbox("Solar forecast", list(WEATHER), key="w_weather")
+    elif eid == "weather":
+        st.selectbox("Solar forecast", list(WEATHER), key="w_weather", disabled=not p["solar_on"])
+    else:
+        return
+    if p != PROCESS_DEFAULTS and st.button("Back to the standard process", icon=":material/restart_alt:", key=f"pk_reset_{eid}", type="tertiary"):
+        ss.proc = dict(PROCESS_DEFAULTS)
+        st.rerun()
+
+
+def box_panel(eid: str, rows: list[dict], astates: dict) -> None:
+    info = ARCH.info(eid)
+    stt = astates.get(eid, "wait")
+    tag = {"ran": "<span class='rh-tag ok'>Done this run</span>", "ask": "<span class='rh-tag ask'>Your turn</span>",
+           "part": "<span class='rh-tag part'>Logged only</span>"}.get(stt, "<span class='rh-tag'>Not run yet</span>")
+    with st.container(border=True, key="boxpanel"):
+        c1, c2 = st.columns([3, 1.3], vertical_alignment="top")
+        c1.markdown(f"<div class='rh-ct'><span class='i'>{ICONS['chip']}</span><div><div class='t'>{info['title']} {tag}</div>"
+                    f"<div class='s'>{info['what']}</div></div></div>", unsafe_allow_html=True)
+        if eid in SWITCH:
+            k, label, hint = SWITCH[eid]
+            ss.proc[k] = c2.toggle(label, value=ss.proc[k], key=f"sw_{k}_{eid}", help=hint)
+        if run and run.get("proc", ss.proc) != ss.proc:
+            html(f"<div class='rh-alert'><b>{ICONS['alert']}Process changed.</b> The next plan uses it. "
+                 "Press <b>Generate plan</b> to see the effect.</div>")
+        t1, t2, t3 = st.tabs([":material/route: How it works", ":material/receipt_long: Run log", ":material/tune: Controls"])
+        with t1:
+            steps = _flow(eid)
+            html("<ol class='rh-flow'>" + "".join(f"<li><span class='n'>{i}</span><div><div class='t'>{t}</div><div class='d'>{d}</div></div></li>"
+                                                  for i, (t, d) in enumerate(steps, 1)) + "</ol>")
+            src = "".join(f"<li>{x}</li>" for x in info.get("comes_from", []))
+            html(f"<div class='rh-src2'><div><b>Where its information comes from</b><ul>{src}</ul></div>"
+                 f"<div><b>In the code</b><p class='mono'>{info.get('code', '')}</p><b>Gives</b><p>{info.get('produces', '')}</p></div></div>")
+        with t2:
+            acts = ARCH.BY_ID[eid][4] if eid in ARCH.BY_ID else ({"reject"} if eid == "loop_no" else {"verify_savings", "learn"})
+            mine = [r for r in rows if r["action"] in acts or (eid == "router" and r["tier"] in ("T1", "T2"))]
+            if not mine:
+                html("<div class='rh-note'>No steps from this box in this run yet.</div>")
+            else:
+                step_rows({r["action"] for r in mine}, mine)
+                for r in mine:
+                    with st.expander(f"{r['ts'][11:19]} · {r['action']} · details"):
+                        st.code(json.dumps(json.loads(r["detail"]), indent=1, default=str)[:3000], language="json")
+        with t3:
+            box_controls(eid)
+            if eid in PANES:
+                PANES[eid](rows)
+
+
 PANES = {"meters": pane_meters, "factory": pane_factory, "bill": pane_bill, "orders": pane_orders, "weather": pane_weather,
          "collect": pane_collect, "check": pane_check, "store": pane_store, "orch": pane_orch, "price": pane_price,
          "forecast": pane_forecast, "rules": pane_rules, "opt": pane_opt, "guard": pane_guard, "manager": pane_manager,
-         "runs": pane_runs, "loop_no": pane_loop_no, "loop_day": pane_loop_day}
+         "runs": pane_runs, "loop_no": pane_loop_no, "loop_day": pane_loop_day, "router": pane_router, "memory": pane_memory}
 
 
 def control_room() -> None:
     rows = ss.audit.rows(ctx.run_id) if ctx else []
     astates = ARCH.element_states(rows, pending, ss.verify is not None, ss.hist is not None)
-    st.button("← Back to the Manager console", type="tertiary", key="hld_back", on_click=goto, args=("Manager console",))
-    html("<p style='max-width:72ch;margin:12px 0 8px'><b>Click any box.</b> A pane opens below the diagram: where that box gets its information, "
-         "what it did in this run, and the controls that change it. Green dot: ran this run. Red dot: waiting for you.</p>")
-    picked = ARCH.component(astates, ss.sel_box, key=f"hld_{ss.get('hld_room_nonce', 0)}")
+    html("<div class='rh-legend-hld'><span><span class='rh-tag ok'>Done</span> ran in this run</span>"
+         "<span><span class='rh-tag ask'>Your turn</span> waiting for you</span><span><span class='rh-tag'>No tag</span> not run yet</span></div>")
+    with st.container(border=True, key="diagram"):
+        picked = ARCH.component(astates, ss.sel_box, key=f"hld_{ss.get('hld_room_nonce', 0)}")
     if picked and picked != ss.sel_box:
         ss.sel_box = picked
         st.rerun()
     eid = ss.sel_box if ss.sel_box in PANES else "orch"
-    provenance(eid, rows)
-    PANES[eid](rows)
+    box_panel(eid, rows, astates)
 
 
 
@@ -984,7 +1189,7 @@ def read_back(state: dict) -> str:
     if not rows:
         return ""
     return (f"<div class='rh-card'><h4>{ICONS['person']}How the agent read your notes</h4><table class='rh-log'><thead><tr><th>Name</th><th>Kind</th><th>Hours</th>"
-            f"<th class='r'>Load</th></tr></thead><tbody>{''.join(rows)}</tbody></table><p class='rh-note' style='margin-top:6px'>Wrong? Fix the note in the Control room (Factory systems) and generate again.</p></div>")
+            f"<th class='r'>Load</th></tr></thead><tbody>{''.join(rows)}</tbody></table><p class='rh-note' style='margin-top:6px'>Wrong? Fix the note in Upload data and generate again.</p></div>")
 
 
 def work_order_csv(st_: dict) -> bytes:
@@ -1045,7 +1250,7 @@ def problem_panel(scope: str) -> None:
          f"<th>Saving vs usual</th><th>Side cost</th></tr>{rows}</table>")
     feas = [o for o in opts if o["feasible"]]
     if not feas:
-        html("<div class='rh-note'>No flexible rule makes a valid plan. Add a looser window in the Control room, or change the order.</div>")
+        html("<div class='rh-note'>No flexible rule makes a valid plan. Add a looser window in Plant setup, or change the order.</div>")
         return
     c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
     choice = c1.radio("Relax which rule?", [o["id"] for o in feas], index=[o["id"] for o in feas].index(pending["recommended"]),
@@ -1065,38 +1270,47 @@ def plan_tab_body() -> None:
         st.plotly_chart(plan_figure(state), width="stretch", config={"displayModeBar": False})
     with right:
         status = state.get("status")
-        if status == "edit_blocked":
-            er = state["edit_result"]
-            html(f"<div class='rh-card alert'><h4>{ICONS['alert']}Edited plan blocked by the policy check</h4>"
-                 + "".join(f"<p>Fails: {f}</p>" for f in er["failed"]) + "<p>The original plan is still waiting for approval.</p></div>")
-        if status == "work_order_issued":
-            html(f"<div class='rh-card approve'><h4>{ICONS['check']}Approved. Work order issued.</h4><p>Operators run the machines at the "
-                 f"approved times; RightHour never switches equipment. After the day, use the <b>Next day</b> loop in the Control room.</p></div>")
-            st.download_button("Download the work order (CSV)", work_order_csv(state), f"work_order_{state['forecast']['date']}.csv", "text/csv", width="stretch", key="wo_plan")
-        elif status == "rejected":
-            html(f"<div class='rh-card'><h4>Plan rejected</h4><p>Current schedule kept. Reason on record: {state.get('approval', {}).get('reason') or 'none given'}.</p></div>")
-        html(f"<div class='rh-card panel'><h4>{ICONS['chip']}Why this plan</h4><p>{state.get('explanation', '')}</p></div>")
+        with st.container(border=True, key="decide"):
+            card_title("person", "Your decision", "A person approves every plan")
+            if status == "edit_blocked":
+                er = state["edit_result"]
+                html(f"<div class='rh-alert'><b>{ICONS['alert']}Edited plan blocked by the policy check.</b> "
+                     + " ".join(f"Fails: {f}." for f in er["failed"]) + " The original plan is still waiting for approval.</div>")
+            if status == "work_order_issued":
+                html(f"<div class='rh-ok'><b>{ICONS['check']}Approved. Work order issued.</b> Operators run the machines at the "
+                     f"approved times; RightHour never switches equipment. After the day, open <b>Next-day check</b>.</div>")
+                st.download_button("Download the work order (CSV)", work_order_csv(state), f"work_order_{state['forecast']['date']}.csv", "text/csv",
+                                   width="stretch", key="wo_plan", icon=":material/download:")
+            elif status == "rejected":
+                html(f"<div class='rh-note'>Plan rejected. Current schedule kept. Reason on record: {state.get('approval', {}).get('reason') or 'none given'}.</div>")
+            if pending and pending["type"] == "approval":
+                approval_controls("plan")
+        with st.container(border=True):
+            card_title("chip", "Why this plan")
+            html(f"<p class='rh-p'>{state.get('explanation', '')}</p>")
         checks = state.get("policy", {}).get("checks", [])
-        html(f"<div class='rh-card'><h4>{ICONS['shield']}Rules checked</h4>" + "".join(
-            f"<p><span class='rh-chip {'ok' if c['ok'] else ('bad' if c['hard'] else 'warn')}'>"
-            f"{'pass' if c['ok'] else ('fail' if c['hard'] else 'note')}</span>{c['rule']}</p>" for c in checks) + "</div>")
-        if pending and pending["type"] == "approval":
-            approval_controls("plan")
+        with st.container(border=True):
+            bad = sum(not c["ok"] for c in checks)
+            card_title("shield", "Rules checked", f"{len(checks) - bad} of {len(checks)} passed" + (f", {bad} need a look" if bad else ""))
+            with st.expander("See every rule", expanded=bool(bad)):
+                html("".join(f"<p class='rh-p'><span class='rh-chip {'ok' if c['ok'] else ('bad' if c['hard'] else 'warn')}'>"
+                             f"{'pass' if c['ok'] else ('fail' if c['hard'] else 'note')}</span>{c['rule']}</p>" for c in checks))
     html(read_back(state))
 
 
 def plan_tab() -> None:
-    if run and run.get("cfg_version") != ss.cfg_version:
+    if run and (run.get("cfg_version") != ss.cfg_version or run.get("proc", ss.proc) != ss.proc):
         html(f"<div class='rh-card alert'><h4>{ICONS['alert']}Settings changed since this plan</h4><p>Press <b>Generate plan</b> to plan with the new settings.</p></div>")
     if run_error:
-        html(f"<div class='rh-card alert'><h4>{ICONS['alert']}{run_error}</h4><p>Check the notes (Control room, Factory systems), the day to plan and the settings, then try again.</p></div>")
+        html(f"<div class='rh-card alert'><h4>{ICONS['alert']}{run_error}</h4><p>Check the production notes in Upload data, the day to plan and Plant setup, then try again.</p></div>")
     if ss.hist is None:
-        html(f"""<div class='rh-empty'><h2>Load a plant's meter data to start</h2>
-<p>Open the <b>Control room</b> tab, click the <b>Smart meters</b> box, and choose the steel data, the sample, or your own CSV.</p></div>""")
+        html(f"""<div class='rh-empty'><h2>Load your meter data to start</h2>
+<p>RightHour needs the plant's 15-minute meter readings. Upload a CSV, or use the steel plant data or the sample.</p></div>""")
+        st.button("Go to Upload data", icon=":material/upload_file:", type="primary", on_click=goto, args=("Upload data",), key="empty_up")
         return
     if not run:
         if not run_error:
-            html(f"<div class='rh-card panel'><h4>{ICONS['check']}Data loaded</h4><p>Choose <b>Generate plan</b> in the sidebar.</p></div>")
+            html(f"<div class='rh-card panel'><h4>{ICONS['check']}Data loaded</h4><p>Press <b>Generate plan</b>.</p></div>")
         return
     warns = [w["text"] for w in state.get("tariff_issues", []) if w["level"] == "warning"]
     if warns:
@@ -1157,466 +1371,267 @@ def audit_tab() -> None:
 
 
 # ------------------------------------------------------------------ the Manager console: every input, all telemetry, every output
-# One screen in three columns that follow the design diagram from left to right: what goes in, what the agents are doing,
-# what comes out. Every panel carries a link to its box on the clickable diagram (Control room), and the small diagram at
-# the top opens any box directly.
-STATE_WORD = {"ran": "done this run", "wait": "not run yet", "ask": "your turn", "part": "logged only"}
-TAG = {"ran": "Done", "ask": "Your turn", "part": "Logged"}
+# ------------------------------------------------------------------ the screens: one job each
+def page_header(title: str, sub: str) -> None:
+    html(f"<header class='rh-ph'><h1>{title}</h1><p>{sub}</p></header>")
 
 
-def _box_state(eid: str, astates: dict) -> str:
-    return astates.get(eid, "wait")
-
-
-SHORT = {"meters": "Smart meters", "factory": "Factory systems", "bill": "Power bill", "orders": "Price orders", "weather": "Weather",
-         "collect": "1 Collect", "check": "2 Check", "store": "3 Store", "orch": "Orchestrator", "price": "Price", "forecast": "Forecast",
-         "rules": "Machines", "router": "Router", "memory": "Factory memory", "opt": "Optimiser", "guard": "Guardrails", "manager": "Manager decides", "runs": "Plan runs",
-         "loop_no": "Every no", "loop_day": "Next-day loop"}
-
-
-def card_head(title: str, box: str, astates: dict, sub: str = "", key: str | None = None) -> None:
-    """Panel header: the title, the state in words (never a dot), and a link to the same box on the design diagram."""
-    s = _box_state(box, astates)
-    c1, c2 = st.columns([1.7, 1], vertical_alignment="center")
-    tag = f"<span class='rh-tag {s}'>{TAG[s]}</span>" if s in TAG else ""
-    c1.markdown(f"<div class='rh-ch'>{title}{tag}</div>", unsafe_allow_html=True)
-    c2.button("On the diagram ↗", key=key or f"lk_{box}_{title}", type="tertiary", on_click=goto, width="stretch",
-              args=("Control room", box), help=f"Open “{ARCH.info(box)['title']}” on the design diagram: where its data comes from, "
-                                               f"what it did in this run ({STATE_WORD[s]}), and its full settings.")
-
-
-def section(n: str, title: str, desc: str) -> None:
-    html(f"<div class='rh-sec'><span class='t'>{title}</span><span class='d'>{desc}</span></div>")
-
-
-def _mini_fig(height: int = 190) -> go.Figure:
-    fig = go.Figure()
-    for s in ss.tariff["slots"]:
-        fig.add_shape(type="rect", xref="x", yref="paper", x0=s["start_h"], x1=s["end_h"], y0=0, y1=1,
-                      fillcolor=BAND[s["type"]], opacity=0.08, line_width=0, layer="below")
-    fig.update_layout(height=height, margin=dict(l=6, r=6, t=6, b=6), paper_bgcolor="#fff", plot_bgcolor="#fff",
-                      font=dict(family=FONT, size=11, color=INK), hoverlabel=HOVER, showlegend=True,
-                      legend=dict(orientation="h", y=-0.22, x=0, font=dict(size=11)),
-                      xaxis=dict(range=[0, 24], tickvals=list(range(0, 25, 6)), ticktext=[f"{h:02d}:00" for h in range(0, 25, 6)],
-                                 showgrid=False, tickfont=dict(size=11, color=MUTED)),
-                      yaxis=dict(gridcolor="#EEF1F6", zeroline=False, rangemode="tozero", tickfont=dict(size=11, color=MUTED)))
-    return fig
+def card_title(icon: str, title: str, sub: str = "") -> None:
+    html(f"<div class='rh-ct'><span class='i'>{ICONS[icon]}</span><div><div class='t'>{title}</div>"
+         + (f"<div class='s'>{sub}</div>" if sub else "") + "</div></div>")
 
 
 def _run_rows() -> list[dict]:
     return ss.audit.rows(ctx.run_id) if ctx else []
 
 
-# ---- column 1: inputs
-def c_meters(astates) -> None:
+def work_order_card() -> None:
+    if not ss.approved:
+        return
+    ast = ss.approved[1]
     with st.container(border=True):
-        card_head("Meter data", "meters", astates, "what goes in")
+        card_title("clipboard", "Work order", f"For {ast['forecast']['weekday']} {ast['forecast']['date']}. People switch the machines.")
+        wo = pd.read_csv(io.BytesIO(work_order_csv(ast)))
+        body = "".join(f"<tr><td>{escape(str(r.machine))}</td><td class='m'>{r.start} to {r.end}</td><td>{escape(str(r.note))}</td></tr>" for r in wo.itertuples())
+        html(f"<table class='rh-log'><thead><tr><th>Machine</th><th>Runs</th><th>Note</th></tr></thead><tbody>{body}</tbody></table>")
+        st.download_button("Download the work order (CSV)", work_order_csv(ast), f"work_order_{ast['forecast']['date']}.csv", "text/csv",
+                           key="wo_today", icon=":material/download:")
+
+
+def page_today() -> None:
+    page_header("Today's plan", f"{escape(str(SITE['name']))} · {escape(str(ss.tariff['name']))}")
+    next_step(state if run else None, pending, ss.verify is not None)
+    run_controls()
+    step_strip(state if run else None, pending, ss.verify is not None)
+    plan_tab()
+    work_order_card()
+
+
+def page_data() -> None:
+    page_header("Upload data", "Everything the agent reads before it plans: meter readings, the day's production notes and price orders.")
+    left, right = st.columns([1.35, 1], gap="medium")
+    with left, st.container(border=True, height="stretch"):
+        card_title("upload", "Meter readings", "15-minute readings from the plant's main meter")
         h = ss.hist
         if h is not None:
             f = LIVE.describe_feed(h)
             html(f"<div class='rh-kv three'><div><b>{f['n_rows']:,}</b>readings</div><div><b>{f['n_full_days']}</b>full days</div>"
-                 f"<div><b class='s'>x{h.attrs.get('scale', 1):.2f}</b>scale to site</div></div>"
-                 f"<div class='rh-note'>{str(f['first_ts'])[:10]} to {str(f['last_ts'])[:16]}. {h.attrs.get('source', '')}</div>")
-        src = st.radio("Source", ["Steel industry data (UCI)", "Synthetic sample", "Upload a CSV"], key="c_src", horizontal=True,
-                       label_visibility="collapsed")
-        auto = st.toggle("Auto-scale to the demo site", value=ss.scale_mode, key="c_scale",
+                 f"<div><b>{str(f['last_ts'])[:10]}</b>latest day</div></div>"
+                 f"<div class='rh-note' style='margin-bottom:10px'>{escape(str(h.attrs.get('source', '')))}</div>")
+        up = st.file_uploader("Upload a meter CSV", type=["csv"], key="d_up",
+                              help="Same columns as the UCI steel dataset: date, Usage_kWh, Lagging_Current_Power_Factor.")
+        auto = st.toggle("Scale the load to this plant's size", value=ss.scale_mode, key="d_scale",
                          help="The UCI plant is smaller than the demo site. Scaling keeps its real shape at the site's size.")
-        up = st.file_uploader("Meter CSV in the UCI format", type=["csv"], key="c_up") if src.startswith("Upload") else None
-        if st.button("Load this data", width="stretch", key="c_load",
-                     disabled=(src.startswith("Steel") and not STEEL_FILE.exists()) or (src.startswith("Upload") and up is None)):
+        b1, b2, b3 = st.columns(3)
+        choice = None
+        if b1.button("Load my CSV", type="primary", width="stretch", disabled=up is None, key="d_load"):
+            choice = "upload"
+        if b2.button("Steel plant data", width="stretch", disabled=not STEEL_FILE.exists(), key="d_steel",
+                     help="Steel_industry_data.csv (UCI, DAEWOO Steel). The default."):
+            choice = "steel"
+        if b3.button("Sample data", width="stretch", key="d_sample", help="A labelled synthetic profile."):
+            choice = "sample"
+        if choice:
             try:
                 ss.scale_mode = auto
                 scale = None if auto else 3.0
-                ss.hist = (D.load_uci_csv(STEEL_FILE, scale) if src.startswith("Steel") else
-                           D.synthetic_history() if src.startswith("Synthetic") else D.load_uci_csv(up, scale))
+                ss.hist = {"upload": lambda: D.load_uci_csv(up, scale), "steel": lambda: D.load_uci_csv(STEEL_FILE, scale),
+                           "sample": D.synthetic_history}[choice]()
                 ss.w_live, ss.live_active, ss.live_future, ss.live_base = False, False, [], None
                 reset_run()
                 ss.autoran = False
                 ss.audit.log("setup", "Plant manager", "data_loaded", tier="human", mode="human",
-                             reason=f"meter data source set to: {src}", detail={"rows": len(ss.hist)})
+                             reason=f"meter data source set to: {choice}", detail={"rows": len(ss.hist)})
                 st.rerun()
             except Exception as e:  # noqa: BLE001
-                st.error(f"Could not read that file: {e}")
-        st.markdown("**Live feed**")
-        live_controls()
-        if ss.live_active:
-            if st.button("Release the next day now", disabled=not ss.live_future, width="stretch", key="c_release"):
-                ss.hist, ss.live_future, day = LIVE.release_next_day(ss.hist, ss.live_future)
-                live_note(f"meter feed delivered {day}")
-                check_approved_plan()
-                ss.trigger_plan = True
-                st.rerun()
-            html(f"<div class='rh-note'>Or drop a CSV in <span class='mono'>{INCOMING.name}/</span>; it is picked up within seconds.</div>")
-
-
-def c_day(astates) -> None:
-    with st.container(border=True):
-        card_head("The day, the goal, the weather", "orch", astates, "run the agents", key="lk_orch_day")
-        run_controls("console")
-
-
-def c_notes(astates) -> None:
-    with st.container(border=True):
-        card_head("Production: today's notes", "factory", astates)
-        cols = ["Name", "Kind", "Note, in plain words"]
-        df = st.data_editor(pd.DataFrame(ss.notes_rows, columns=NOTE_COLS)[cols], num_rows="dynamic", hide_index=True, width="stretch",
-                            key=f"c_notes{ss.notes_ver}",
-                            column_config={"Kind": st.column_config.SelectboxColumn(options=["Fixed batch", "New order"], required=True, default="New order"),
-                                           "Note, in plain words": st.column_config.TextColumn(width="large")})
-        old = {r.get("Name"): r for r in ss.notes_rows}
-        ss.notes_rows = [{**{k: old.get(r.get("Name"), {}).get(k) for k in NOTE_COLS}, **r} for r in df.to_dict("records")]
-        b1, b2 = st.columns(2)
-        if b1.button("Add example order", width="stretch", key="c_example",
-                     help="A 400 kW order that does not fit the usual schedule. Shows what happens when rules conflict."):
-            ss.notes_rows = ss.notes_rows + [dict(EXAMPLE_ORDER)]
-            ss.notes_ver += 1
-            st.rerun()
-        b2.button("Machines & rules ↗", width="stretch", key="c_mach", on_click=goto, args=("Control room", "factory"))
-        m, r = MACH["shiftable"], [x for x in MACH["rules"] if x["type"] == "no_overlap"]
-        html(f"<div class='rh-note'>{len(m)} machines can move ({sum(x['kw'] for x in m):,.0f} kW in all); {len(r)} crew rule(s). "
-             f"The notes are read by the Machines agent ({LLM.label}).</div>")
-
-
-def c_bill(astates) -> None:
-    with st.container(border=True):
-        card_head("Price bands and contract", "bill", astates)
-        t = ss.tariff
-        total = 24
-        bars = "".join(f"<span style='width:{(s['end_h'] - s['start_h']) / total * 100:.2f}%;background:{BAND[s['type']]}' "
-                       f"title='{s['type']} {s['start_h']:02d}:00 to {s['end_h']:02d}:00'>{s['type']} ₹{s['rate']:.2f}</span>" for s in t["slots"])
-        html(f"<div class='rh-bands' role='img' aria-label='Price bands across the day'>{bars}</div>"
-             f"<div class='rh-note'>00:00 to 24:00. Demand charge ₹{t['demand_charge_per_kva_month']:,.0f} per kVA per month. {t.get('status', '')}</div>")
-        warns = [i.text for i in validate_tariff(t) if i.level == "warning"]
-        if warns:
-            with st.expander(f"{len(warns)} tariff check warning(s)"):
-                for w in warns:
-                    html(f"<div class='rh-note'><span class='rh-chip warn'>check</span>{w}</div>")
-        site, v = dict(ss.cfg["site"]), ss.cfg_version
-        a, b = st.columns(2)
-        site["contract_demand_kva"] = a.number_input("Contract demand (kVA)", 10, 100000, int(site["contract_demand_kva"]), 10, key=f"c_cd{v}")
-        site["month_to_date_max_kva"] = b.number_input("This month's max so far (kVA)", 0, 100000, int(site["month_to_date_max_kva"]), 10, key=f"c_mtd{v}")
-        b1, b2 = st.columns(2)
-        changed = (site["contract_demand_kva"], site["month_to_date_max_kva"]) != (ss.cfg["site"]["contract_demand_kva"], ss.cfg["site"]["month_to_date_max_kva"])
-        if b1.button("Save contract", type="primary" if changed else "secondary", disabled=not changed, width="stretch", key="c_savecd"):
-            save_cfg(site=site)
-        b2.button("Bands & orders ↗", width="stretch", key="c_orders", on_click=goto, args=("Control room", "orders"))
-        html(f"<div class='rh-note'>Tariff library: {len(ss.library)} signed-off order(s).</div>")
-
-
-def c_solar(astates) -> None:
-    with st.container(border=True):
-        card_head("Weather and rooftop solar", "weather", astates)
-        site = ss.cfg["site"]
-        pv = state.get("pv") if run else None
-        if pv:
-            kwh = sum(pv["kw"]) / SLOTS_PER_HOUR
-            html(f"<div class='rh-kv three'><div><b>{site['rooftop_pv_kwp']:,}</b>kWp on the roof</div><div><b>{max(pv['kw']):.0f}</b>peak kW tomorrow</div>"
-                 f"<div><b>{kwh:,.0f}</b>kWh in the day</div></div><div class='rh-note'>Source: {pv['source']}. Change the forecast in "
-                 f"<b>The day, the goal, the weather</b>.</div>")
-        else:
-            html(f"<div class='rh-note'>{site['rooftop_pv_kwp']} kWp at {site['latitude']}, {site['longitude']}. The forecast appears after a run.</div>")
-
-
-def c_model(astates) -> None:
-    with st.container(border=True):
-        card_head("Language model", "router", astates, "small and large steps", key="lk_router_model")
-        model_controls()
-
-
-# ---- column 2: telemetry
-def c_run(astates) -> None:
-    rows = _run_rows()
-    with st.container(border=True):
-        card_head("This run", "store", astates, ctx.run_id if ctx else "", key="lk_store_run")
-        if not rows:
-            html("<div class='rh-note'>No run yet. Press <b>Generate plan</b>.</div>")
-            return
-        n = {t: sum(1 for r in rows if r["tier"] == t) for t in ("T0", "T1", "T2", "human")}
-        spend = sum(r["cost_usd"] for r in rows)
-        t0, t1 = pd.Timestamp(rows[0]["ts"]), pd.Timestamp(rows[-1]["ts"])
-        total = max(len(rows), 1)
-        mix = "".join(f"<span class='{c}' style='width:{n[t] / total * 100:.1f}%'></span>"
-                      for t, c in (("T0", "m0"), ("T1", "m1"), ("T2", "m2"), ("human", "mh")))
-        html(f"<div class='rh-kv three'><div><b>{len(rows)}</b>steps logged</div><div><b>{n['T1'] + n['T2']}</b>model calls, {n['T2']} large</div>"
-             f"<div><b>${spend:.4f}</b>{'measured' if LLM.live else 'estimated'} spend</div></div>"
-             f"<div class='rh-mix' role='img' aria-label='Steps by tier'>{mix}</div>"
-             f"<div class='rh-key' style='margin:0 0 6px'><span><span class='rh-chip t0'>T0</span>{n['T0']}</span><span><span class='rh-chip t1'>T1</span>{n['T1']}</span>"
-             f"<span><span class='rh-chip t2'>T2</span>{n['T2']}</span><span><span class='rh-chip human'>human</span>{n['human']}</span></div>"
-             f"<div class='rh-note'>Started {t0:%H:%M:%S}, last step {t1:%H:%M:%S} ({(t1 - t0).total_seconds():.0f} s). Mode: {LLM.label}. "
-             f"Audit store holds {len(ss.audit.rows())} rows across all runs.</div>")
-        esc = [r for r in rows if r["tier"] == "T2"]
-        if esc:
-            html("<div class='rh-note' style='margin-top:4px'><b>Why the large model was used:</b> " + "; ".join(sorted({r["reason"] for r in esc})) + "</div>")
-
-
-def c_health(astates) -> None:
-    with st.container(border=True):
-        card_head("Data health", "check", astates)
-        issues = state.get("data_issues") if run else (D.validate_load(ss.hist) if ss.hist is not None else [])
-        for i in issues or []:
-            html(f"<div class='rh-note' style='margin:2px 0'><span class='rh-chip {'ok' if i['level'] == 'ok' else ('bad' if i['level'] == 'error' else 'warn')}'>{i['level']}</span>{i['text']}</div>")
-
-
-def c_forecast(astates) -> None:
-    with st.container(border=True):
-        card_head("Forecast for the plan day", "forecast", astates)
-        if not run:
-            html("<div class='rh-note'>Appears after a run.</div>")
-            return
-        fc, pv = state["forecast"], state["pv"]
-        x = [k / SLOTS_PER_HOUR for k in range(N_SLOTS)]
-        fig = _mini_fig(180)
-        fig.add_trace(go.Scatter(x=x, y=fc["kw"], name="Base load kW", line=dict(color=NAVY, width=2)))
-        fig.add_trace(go.Scatter(x=x, y=pv["kw"], name="Solar kW", line=dict(color=AMBER_TEXT, width=1.6), fill="tozeroy", fillcolor="rgba(217,162,27,.14)"))
-        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key="c_fc_chart")
-        html(f"<div class='rh-note'>{fc['weekday']} {fc['date']}: {fc['method']}. Learned correction x{fc['bias']:.3f}.</div>")
-        if ss.bias != 1.0 and st.button("Reset learned correction", key="c_resetbias", type="tertiary"):
-            ss.bias = 1.0
-            st.rerun()
-
-
-def c_opt(astates) -> None:
-    with st.container(border=True):
-        card_head("Optimiser", "opt", astates, "OR-Tools MILP")
-        if not run:
-            html("<div class='rh-note'>Appears after a run.</div>")
-            return
-        plan, prob = state["plan"], state["problem"]
-        if plan.get("status") != "optimal":
-            html(f"<div class='rh-note' style='color:var(--red)'>{ICONS['alert']} No valid schedule: {plan.get('reason', '')}</div>")
-            return
-        sched = plan["schedule"]
-        moved = [m for m in prob["shiftable"] if m.get("baseline_start_h") is not None and m["baseline_start_h"] != sched[m["id"]]]
-        body = "".join(f"<tr><td>{escape(str(m['name']))}</td><td class='r'>{m['kw']:.0f}</td><td class='m'>"
-                       f"{'new' if m.get('baseline_start_h') is None else '%02d:00' % m['baseline_start_h']}</td>"
-                       f"<td class='m'><b style='color:{NAVY}'>{sched[m['id']]:02d}:00</b></td></tr>" for m in prob["shiftable"])
-        html(f"<div class='rh-kv three'><div><b>{len(moved)}/{len(prob['shiftable'])}</b>machines moved</div>"
-             f"<div><b>{rs(plan['total_rs'])}</b>plan cost</div><div><b>{plan['peak_kva']:.0f}</b>peak kVA</div></div>"
-             f"<table class='rh-tiny'><thead><tr><th>Machine</th><th class='r'>kW</th><th>Usual</th><th>Planned</th></tr></thead><tbody>{body}</tbody></table>")
-
-
-def c_guard(astates) -> None:
-    with st.container(border=True):
-        card_head("Guardrails", "guard", astates, "hard rules")
-        checks = state.get("policy", {}).get("checks", []) if run else []
-        if not checks:
-            html("<div class='rh-note'>No plan to check yet.</div>")
-            return
-        ok = sum(c["ok"] for c in checks)
-        bad = [c for c in checks if not c["ok"]]
-        html(f"<div class='rh-kv'><div><b class='g'>{ok}</b>checks passed</div><div><b class='{'r' if any(c['hard'] for c in bad) else ''}'>{len(bad)}</b>failed or noted</div></div>")
-        for c in bad:
-            html(f"<div class='rh-note'><span class='rh-chip {'bad' if c['hard'] else 'warn'}'>{'fail' if c['hard'] else 'note'}</span>{c['rule']}</div>")
-        if state.get("status") == "edit_blocked":
-            html("<div class='rh-note' style='color:var(--red)'>Your edited plan was blocked: " + "; ".join(state["edit_result"]["failed"]) + "</div>")
-
-
-def c_stream(astates) -> None:
-    rows = _run_rows()
-    with st.container(border=True):
-        card_head("Agent steps, newest first", "orch", astates, key="lk_orch_stream")
-        if not rows:
-            html("<div class='rh-note'>Steps appear here as the agents work.</div>")
-            return
-        body = "".join(f"<tr title='{escape(r['reason'])}'><td class='m'>{r['ts'][11:19]}</td><td>{chip(r['tier'])}</td><td><b>{escape(str(r['action']))}</b></td>"
-                       f"<td class='rh-note'>{SHORT.get(ARCH.ACTION_BOX.get(r['action'], 'orch'), '')}</td></tr>"
-                       for r in reversed(rows[-8:]))
-        html(f"<table class='rh-tiny'><thead><tr><th>Time</th><th>Tier</th><th>Step</th><th>Diagram box</th></tr></thead><tbody>{body}</tbody></table>"
-             "<div class='rh-note'>Hover a row for why that tier was used.</div>")
-        c1, c2 = st.columns(2)
-        c1.button("Full agent log", type="tertiary", key="c_log", on_click=goto, args=("Agent log",))
-        c2.button("Audit trail", type="tertiary", key="c_audit", on_click=goto, args=("Audit trail",))
-    if ss.live_log:
+                st.error(f"Could not read that file: {e}. Check it has the columns date, Usage_kWh and Lagging_Current_Power_Factor.")
+    with right:
         with st.container(border=True):
-            card_head("Live feed log", "meters", astates, key="lk_meters_feed")
-            html("<div class='rh-note mono'>" + "<br>".join(ss.live_log[:8]) + "</div>")
-
-
-# ---- column 3: outputs
-def c_decision(astates) -> None:
+            card_title("pulse", "Data health", "Checked every time data loads")
+            issues = state.get("data_issues") if run else (D.validate_load(ss.hist) if ss.hist is not None else [])
+            for i in issues or []:
+                html(f"<div class='rh-note' style='margin:2px 0 6px'><span class='rh-chip {'ok' if i['level'] == 'ok' else ('bad' if i['level'] == 'error' else 'warn')}'>{i['level']}</span>{i['text']}</div>")
+            if not issues:
+                html("<div class='rh-note'>Load meter data to see its checks.</div>")
+        with st.container(border=True):
+            card_title("bolt", "Live feed", "New days arrive one at a time, like a real meter")
+            live_controls()
+            if ss.live_active:
+                if st.button("Release the next day now", disabled=not ss.live_future, width="stretch", key="d_release"):
+                    ss.hist, ss.live_future, day = LIVE.release_next_day(ss.hist, ss.live_future)
+                    live_note(f"meter feed delivered {day}")
+                    check_approved_plan()
+                    ss.trigger_plan = True
+                    st.rerun()
+                html(f"<div class='rh-note'>Or drop a CSV in <span class='mono'>{INCOMING.name}/</span>; it is picked up within seconds.</div>")
+            if ss.live_log:
+                html("<div class='rh-note mono' style='margin-top:6px'>" + "<br>".join(ss.live_log[:6]) + "</div>")
     with st.container(border=True):
-        card_head("Your decision", "manager", astates, "a person approves every plan")
-        if run_error:
-            html(f"<div class='rh-note' style='color:var(--red)'>{run_error}</div>")
-        if not run:
-            html("<div class='rh-note'>No plan yet.</div>")
-            return
-        if run.get("cfg_version") != ss.cfg_version:
-            html(f"<div class='rh-note' style='color:var(--red)'>{ICONS['alert']} Settings changed since this plan. Generate again.</div>")
-        status = state.get("status")
-        if pending and pending["type"] == "choose_relaxation":
-            compact_problem()
-        elif pending and pending["type"] == "approval":
-            html(f"<div class='rh-note' style='margin-bottom:6px'>{state.get('explanation', '')}</div>")
-            approval_controls("console")
-        elif status == "work_order_issued":
-            html(f"<div class='rh-card approve' style='margin:4px 0'><h4>{ICONS['check']}Approved. Work order issued.</h4>"
-                 f"<p>People run the machines at these times; RightHour never switches equipment.</p></div>")
-        elif status == "rejected":
-            html(f"<div class='rh-note'>Rejected. Reason on record: {state.get('approval', {}).get('reason') or 'none given'}.</div>")
-        elif status == "fallback":
-            html(f"<div class='rh-note' style='color:var(--red)'>Current schedule kept. {state.get('note', '')}</div>")
-
-
-def compact_problem() -> None:
-    """The 'which rule can flex?' question, sized for a console column. The full table is on the Plan screen."""
-    opts = pending["options"]
-    html(f"<div class='rh-card alert' style='margin:4px 0 8px;padding:12px 14px'><h4>{ICONS['alert']}No valid schedule for {state['forecast']['date']}</h4>"
-         f"<p style='font-size:13px'>{pending['diagnosis']} The agent tested each flexible rule; contract demand and fixed batches are never relaxed.</p></div>")
-    body = ""
-    for o in opts:
-        res = (f"{rs(o['cost_rs'])}" + (f", saves {rs(o['saving_rs'])}" if o.get("saving_rs") is not None else "")) if o["feasible"] else "still no plan"
-        rec = " <span class='rh-chip ok'>recommended</span>" if o["id"] == pending["recommended"] else ""
-        body += f"<tr><td>{o['text']}{rec}<br><span class='rh-note'>{o['side_cost_note']}</span></td><td class='r'>{res}</td></tr>"
-    html(f"<table class='rh-tiny'><thead><tr><th>Flexible rule</th><th class='r'>Day cost</th></tr></thead><tbody>{body}</tbody></table>")
-    feas = [o for o in opts if o["feasible"]]
-    if not feas:
-        html("<div class='rh-note'>No flexible rule makes a valid plan. Loosen a window in Factory systems, or change the order.</div>")
-        return
-    choice = st.radio("Relax which rule?", [o["id"] for o in feas], index=[o["id"] for o in feas].index(pending["recommended"]),
-                      format_func=lambda i: next(o["text"] for o in feas if o["id"] == i), key="relax_console")
-    if st.button("Relax this rule and re-plan", type="primary", width="stretch", key="relaxgo_console"):
-        do_resume(choice)
-        st.rerun()
-
-
-def c_saving(astates) -> None:
-    with st.container(border=True):
-        card_head("Saving and demand", "opt", astates, key="lk_opt_saving")
-        if not run or state.get("plan", {}).get("status") != "optimal":
-            html("<div class='rh-note'>Appears when there is a valid plan.</div>")
-            return
-        base, plan, sav = state["baseline"], state["plan"], state.get("saving_rs")
-        cd, mtd, pk = SITE["contract_demand_kva"], SITE["month_to_date_max_kva"], plan["peak_kva"]
-        yr = lakh(sav * SITE["working_days_per_year"]) if sav is not None else "n/a"
-        html(f"<div class='rh-kv'><div><b class='g' style='font-size:26px'>{rs(sav) if sav is not None else 'n/a'}</b>projected saving a day</div>"
-             f"<div><b style='font-size:26px'>{yr}</b>a year at {SITE['working_days_per_year']} days</div>"
-             f"<div><b class='s'>{rs(base['total_rs']) if base.get('feasible') else 'n/a'}</b>usual schedule</div>"
-             f"<div><b class='s'>{rs(plan['total_rs'])}</b>RightHour plan</div></div>")
-        pct = lambda v: min(max(v / cd * 100, 0), 100)  # noqa: E731
-        html(f"<div class='rh-note'>Max demand <b style='color:{NAVY if pk <= mtd else RED}'>{pk:.0f} kVA</b>, {'within' if pk <= mtd else 'above'} this month's {mtd}; contract {cd}.</div>"
-             f"<div class='rh-meter' style='margin:26px 0 26px'><div class='fill' style='width:{pct(pk):.1f}%'></div>"
-             f"<div class='tick top' style='left:{pct(mtd):.1f}%'><span style='transform:translateX(-50%)'>month max {mtd}</span></div>"
-             f"<div class='tick cd bot' style='left:99.6%'><span style='transform:translateX(-100%)'>contract {cd}</span></div></div>")
-        x = [k / SLOTS_PER_HOUR for k in range(N_SLOTS)] + [24]
-        b, p = base["kva"], plan["kva"]
-        fig = _mini_fig(200)
-        fig.add_trace(go.Scatter(x=x, y=b + [b[-1]], name="Usual", line=dict(color=MUTED, width=1.5, dash="dot", shape="hv")))
-        fig.add_trace(go.Scatter(x=x, y=p + [p[-1]], name="Plan", line=dict(color=NAVY, width=2.4, shape="hv")))
-        fig.add_hline(y=cd, line=dict(color=RED, width=1.2, dash="dash"))
-        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key="c_plan_chart")
-        st.button("Open the full plan", type="tertiary", key="c_fullplan", on_click=goto, args=("Plan",))
-
-
-def c_workorder(astates) -> None:
-    with st.container(border=True):
-        card_head("Work order", "runs", astates)
-        if not ss.approved:
-            html("<div class='rh-note'>Issued when you approve a plan.</div>")
-            return
-        ast = ss.approved[1]
-        rows = pd.read_csv(io.BytesIO(work_order_csv(ast)))
-        body = "".join(f"<tr><td>{r.machine}</td><td class='m'>{r.start} to {r.end}</td><td class='rh-note'>{r.note}</td></tr>" for r in rows.itertuples())
-        html(f"<div class='rh-note'>For {ast['forecast']['weekday']} {ast['forecast']['date']}.</div>"
-             f"<table class='rh-tiny'><tbody>{body}</tbody></table>")
-        st.download_button("Download the work order (CSV)", work_order_csv(ast), f"work_order_{ast['forecast']['date']}.csv", "text/csv",
-                           width="stretch", key="c_wo")
-
-
-def c_check(astates) -> None:
-    with st.container(border=True):
-        card_head("Next-day check and learning", "loop_day", astates)
-        v = ss.verify
-        if v:
-            real = v["realisation"]
-            html(f"<div class='rh-kv three'><div><b>{rs(v['projected_saving_rs'])}</b>expected</div>"
-                 f"<div><b class='g'>{rs(v['verified_saving_rs'])}</b>verified on the meter</div><div><b>{(real or 0) * 100:.0f}%</b>realised</div></div>"
-                 f"<div class='rh-note'>Base load came in {v['forecast_error_pct']:+.1f}% against the forecast; correction x{v['old_bias']:.3f} to "
-                 f"x{v['new_bias']:.3f}{' (in use)' if abs(ss.bias - v['new_bias']) < 1e-9 else ''}. {v.get('learn_note', '').capitalize()}.</div>")
-            if abs(ss.bias - v["new_bias"]) > 1e-9 and st.button("Use this learning for the next plan", key="c_learn", width="stretch"):
-                ss.bias = v["new_bias"]
-                st.rerun()
-        elif ss.approved:
-            actx, ast = ss.approved
-            real_day = D.day_actuals(ss.hist, ast["forecast"]["date"]) if ss.hist is not None else None
-            if real_day is not None:
-                html("<div class='rh-note'>The meter file holds this day's real readings.</div>")
-                if st.button("Check against the real readings", type="primary", width="stretch", key="c_verify"):
-                    try:
-                        ss.verify = verify_and_learn(actx, ast, dict(ast["final_schedule"]), real_day)
-                        st.rerun()
-                    except Exception as e:  # noqa: BLE001
-                        st.error(f"Could not run the check: {e}")
-                html("<div class='rh-note'>To record what actually ran on the floor, use the diagram's Next-day box.</div>")
-            else:
-                html("<div class='rh-note'>Waiting for the day's readings. In live mode they arrive and the check runs by itself.</div>")
+        card_title("notes", "Production notes for the day", "What the supervisor says: fixed batches and new orders")
+        if plan_date:
+            notes_editor()
         else:
-            html("<div class='rh-note'>Runs after an approved day.</div>")
-        hist_rows = [r for r in ss.audit.rows() if r["action"] == "verify_savings"]
-        if hist_rows:
+            html("<div class='rh-note'>Load meter data first, so there is a day to plan.</div>")
+    with st.container(border=True):
+        card_title("doc", "New price order", "Read a tariff order from the regulator, check it, sign it off")
+        pane_orders([])
+
+
+def page_setup() -> None:
+    page_header("Plant setup", "Set once, change when the plant changes. Saved settings are used by the next plan.")
+    t1, t2, t3, t4 = st.tabs([":material/precision_manufacturing: Machines and crew rules", ":material/currency_rupee: Prices and contract",
+                              ":material/wb_sunny: Rooftop solar", ":material/smart_toy: AI model"])
+    with t1:
+        pane_machines()
+    with t2:
+        pane_bill([])
+    with t3:
+        pane_weather([])
+    with t4:
+        html("<p class='rh-lead'>The AI model only writes and reads words: it reads notes and explains the plan. "
+             "Code does every calculation. Offline mode needs no key.</p>")
+        with st.container(border=True, key="modelbox"):
+            model_controls()
+
+
+def page_control_room() -> None:
+    page_header("Control room", "The agents' design, lit up from this run. Click a box to see its data, its steps and its settings.")
+    control_room()
+
+
+def page_check() -> None:
+    page_header("Next-day check", "After the day runs, compare the real meter readings with the plan. The agent learns from the gap.")
+    if not ss.approved:
+        html(f"<div class='rh-empty'><h2>Nothing to check yet</h2><p>Approve a plan on Today first. After the day, come back here "
+             "to see the real saving.</p></div>")
+        st.button("Go to Today", icon=":material/today:", type="primary", on_click=goto, args=("Today",), key="chk_today")
+    else:
+        with st.container(border=True):
+            pane_loop_day([])
+    hist_rows = [r for r in ss.audit.rows() if r["action"] == "verify_savings"]
+    if hist_rows:
+        with st.container(border=True):
+            card_title("history", "Savings history", "Every checked day")
             body = ""
-            for r in hist_rows[-6:][::-1]:
+            for r in hist_rows[-12:][::-1]:
                 d = json.loads(r["detail"])
                 body += (f"<tr><td class='m'>{r['ts'][:16].replace('T', ' ')}</td><td class='r'>{rs(d.get('projected_saving_rs') or 0)}</td>"
                          f"<td class='r'>{rs(d.get('verified_saving_rs') or 0)}</td></tr>")
-            html(f"<div class='rh-note' style='margin-top:8px'><b>Savings history</b></div><table class='rh-tiny'><thead><tr><th>Checked</th>"
-                 f"<th class='r'>Expected</th><th class='r'>Verified</th></tr></thead><tbody>{body}</tbody></table>")
+            html(f"<table class='rh-log'><thead><tr><th>Checked</th><th class='r'>Expected</th><th class='r'>Verified</th></tr></thead><tbody>{body}</tbody></table>")
 
 
-def manager_console() -> None:
-    rows = _run_rows()
-    astates = ARCH.element_states(rows, pending, ss.verify is not None, ss.hist is not None)
-    # 1. what a manager came for: run the day, see the saving, decide
-    section("1", "Today's plan", "run the day, review the saving, decide")
-    c_left, c_right = st.columns([1, 1.25], gap="medium")
-    with c_left:
-        c_day(astates)
-        c_decision(astates)
-        c_workorder(astates)
-    with c_right:
-        c_saving(astates)
-        c_opt(astates)
-        c_check(astates)
-    # 2. how the agents got there: the design diagram, lit up from this run
-    section("2", "How the agents got there", "click any box for its data, its run log and its settings")
-    with st.container(border=True):
-        html("<div class='rh-legend-hld'><span><span class='rh-tag ok'>Done</span> ran in this run</span>"
-             "<span><span class='rh-tag ask'>Your turn</span> waiting for you</span><span><span class='rh-tag'>No tag</span> not run yet</span>"
-             "<span class='rh-note'>Open the full diagram in the Control room.</span></div>")
-        ss.setdefault("hld_nonce", 0)
-        picked = ARCH.component(astates, None, key=f"hld_console_{ss.hld_nonce}", css="#root{padding:6px;border:0} svg.dg{min-width:900px}")
-        if picked:
-            ss.hld_nonce += 1
-            goto("Control room", picked)
-            st.rerun()
-    # 3. the details: what went in, and what the agents did
-    section("3", "Inputs and details", "data, notes, prices and the model on one side; the agents' own steps on the other")
-    c_in, c_tel = st.columns([1, 1], gap="medium")
-    with c_in:
-        c_meters(astates)
-        c_notes(astates)
-        c_bill(astates)
-        c_solar(astates)
-        c_model(astates)
-    with c_tel:
-        c_run(astates)
-        c_health(astates)
-        c_forecast(astates)
-        c_guard(astates)
-        c_stream(astates)
+def page_history() -> None:
+    page_header("History", "Every step the agents took, which tier did it, and what each decision cost.")
+    html("<div class='rh-key'><span><span class='rh-chip t0'>T0</span>plain code, no AI</span><span><span class='rh-chip t1'>T1</span>small AI model</span>"
+         "<span><span class='rh-chip t2'>T2</span>large AI model, only when needed</span><span><span class='rh-chip human'>human</span>a person</span></div>")
+    t1, t2 = st.tabs([":material/list: This run", ":material/database: All runs"])
+    with t1:
+        log_tab()
+    with t2:
+        audit_tab()
 
 
-# ------------------------------------------------------------------ screens
-next_step(state if run else None, pending, ss.verify is not None)
-step_strip(state if run else None, pending, ss.verify is not None)
-if ss.get("view_nav") != ss.view:   # a link moved us: keep the screen switch in step (before it is drawn)
-    ss.view_nav = ss.view
+# ------------------------------------------------------------------ Ask RightHour: one assistant with every fact on screen
+def ask_facts() -> dict:
+    s = state or {}
+    site, t = ss.cfg["site"], ss.tariff
+    plan, base = s.get("plan") or {}, s.get("baseline") or {}
+    prob = s.get("problem") or {}
+    sched = plan.get("schedule") or {}
+    moves = []
+    for m in prob.get("shiftable", []):
+        if m["id"] in sched:
+            b = m.get("baseline_start_h")
+            moves.append(f"{m['name']} {('usually %02d:00, ' % b) if b is not None else 'new order, '}planned {sched[m['id']]:02d}:00")
+    checks = (s.get("policy") or {}).get("checks", [])
+    all_rows = ss.audit.rows()
+    ver = [r for r in all_rows if r["action"] == "verify_savings"][::-1]
+    vtxt, vtot = [], 0.0
+    for r in ver[:15]:
+        d = json.loads(r["detail"])
+        v = d.get("verified_saving_rs") or 0
+        vtot += v
+        vtxt.append(f"- checked {r['ts'][:16].replace('T', ' ')}: expected {rs(d.get('projected_saving_rs') or 0)}, verified {rs(v)}")
+    dec = [f"- {r['ts'][:16].replace('T', ' ')} {r['action']}: {r['reason']}" for r in all_rows if r["action"] in ("work_order", "reject", "relax_rule")][-10:][::-1]
+    steps = [f"- {r['ts'][11:19]} {r['tier']} {r['agent']}: {r['action']} ({r['reason']})" for r in _run_rows()]
+    h = ss.hist
+    feed = LIVE.describe_feed(h) if h is not None else None
+    waiting = ("choose which rule to relax" if pending and pending["type"] == "choose_relaxation" else
+               "approve or reject the plan" if pending else "nothing")
+    p = ss.proc
+    fc_days = "the last 7 days" if p["method"] == "recent" else f"the same weekday over {p['weeks']} weeks"
+    return {"plant": site["name"], "tariff": t["name"], "contract_kva": site["contract_demand_kva"], "month_max_kva": site["month_to_date_max_kva"],
+            "pv_kwp": site["rooftop_pv_kwp"], "demand_charge": f"₹{t['demand_charge_per_kva_month']:,.0f} per kVA per month",
+            "bands": "; ".join(f"{b['type']} {b['start_h']:02d}:00-{b['end_h']:02d}:00 ₹{b['rate']:.2f}/kVAh" for b in t["slots"]),
+            "data": (f"{feed['n_rows']:,} readings, {feed['n_full_days']} full days, {str(feed['first_ts'])[:10]} to {str(feed['last_ts'])[:16]}. "
+                     f"{h.attrs.get('source', '')}. Live feed {'on' if ss.live_active else 'off'}.") if feed else "No meter data loaded.",
+            "plan_for": f"{s['forecast']['weekday']} {s['forecast']['date']}" if s.get("forecast") else (f"{plan_date}" if plan_date else "not set"),
+            "status": str(s.get("status") or "").replace("_", " ") or ("no plan generated yet" if not run else "plan ready"), "waiting": waiting,
+            "saving": f"{rs(s['saving_rs'])} a day (about {lakh(s['saving_rs'] * site['working_days_per_year'])} a year)" if s.get("saving_rs") is not None else "none claimed",
+            "plan_cost": rs(plan["total_rs"]) if plan.get("total_rs") is not None else "n/a",
+            "usual_cost": rs(base["total_rs"]) if base.get("total_rs") is not None else "n/a",
+            "peak": f"{plan['peak_kva']:.0f} kVA" if plan.get("peak_kva") is not None else "n/a",
+            "schedule": "; ".join(moves) or "no schedule", "explanation": s.get("explanation") or "no plan yet",
+            "checks": "; ".join(f"{'pass' if c['ok'] else 'FAIL'}: {c['rule']}" for c in checks) or "none yet",
+            "process": (f"forecast from {fc_days}, "
+                        f"learned correction {'x%.3f' % ss.bias if p['use_learning'] else 'off'}, solar {'on' if p['solar_on'] else 'off'}, "
+                        f"notes reader {'on' if p['notes_on'] else 'off'}"),
+            "ai": LLM.label, "verified": "\n".join(vtxt), "verified_total": rs(vtot) if ver else "", "verified_n": len(ver[:15]),
+            "decisions": "\n".join(dec), "steps": "\n".join(steps)}
 
 
-def _nav_changed() -> None:
-    ss.view = ss.view_nav or ss.view
+def ask_answer(q: str) -> str:
+    f = ask_facts()
+    if not LLM.live:
+        return ASK.offline_answer(q, f)
+    model = MODELS[ss.provider]["T2"]
+    history = "".join(f"{m['role']}: {m['text']}\n" for m in ss.chat[-6:])
+    try:
+        text, tin, tout = LLM.complete(model, ASK.SYSTEM + "\n\n" + ASK.context_text(f), f"{history}manager: {q}", 700)
+    except Exception as e:  # noqa: BLE001
+        return f"The AI model did not answer ({e}). Here is what plain code can tell you:\n\n" + ASK.offline_answer(q, f)
+    ss.audit.log(ctx.run_id if ctx else "ask", "Ask RightHour", "answer_question", tier="T2", model=model, mode=LLM.mode,
+                 reason="free-form question: large model", tokens_in=tin, tokens_out=tout,
+                 cost_usd=cost_usd(model, tin, tout), detail={"question": q})
+    return text
 
 
-st.segmented_control("Screen", VIEWS, key="view_nav", on_change=_nav_changed, label_visibility="collapsed")
-{"Manager console": manager_console, "Plan": plan_tab, "Control room": control_room,
- "Agent log": log_tab, "Audit trail": audit_tab}[ss.view]()
+ss.setdefault("chat", [])
+
+
+@st.dialog("Ask RightHour", width="large")
+def ask_dialog() -> None:
+    html(f"<div class='rh-note' style='margin-top:-6px'>Knows the plan, the prices, every decision and every checked saving. "
+         f"{'Answers with the large model, ' + escape(MODELS[ss.provider]['T2']) + '.' if LLM.live else 'Offline: plain code answers status, savings and history. Add an AI key in Plant setup for any question.'}</div>")
+    q = None
+    if not ss.chat:
+        cols = st.columns(2)
+        for i, sug in enumerate(ASK.SUGGESTIONS):
+            if cols[i % 2].button(sug, key=f"sug_{i}", width="stretch"):
+                q = sug
+    log = st.container(height=380, border=False, key="chatlog")
+    with log:
+        for m in ss.chat:
+            with st.chat_message("user" if m["role"] == "manager" else "assistant", avatar=":material/person:" if m["role"] == "manager" else ":material/bolt:"):
+                st.markdown(m["text"])
+    q = st.chat_input("Ask about the plan, savings, history...", key="ask_in") or q
+    if q:
+        with log:
+            with st.chat_message("user", avatar=":material/person:"):
+                st.markdown(q)
+            with st.chat_message("assistant", avatar=":material/bolt:"), st.spinner("Thinking..."):
+                a = ask_answer(q)
+                st.markdown(a)
+        ss.chat += [{"role": "manager", "text": q}, {"role": "assistant", "text": a}]
+    if ss.chat and st.button("Clear the conversation", type="tertiary", icon=":material/delete:", key="ask_clear"):
+        ss.chat = []
+        st.rerun(scope="fragment")
+
+
+# ------------------------------------------------------------------ draw
+sidebar()
+with st.container(key="askfab"):
+    if st.button("Ask RightHour", icon=":material/forum:", type="primary", key="ask_open"):
+        ask_dialog()
+{"Today": page_today, "Upload data": page_data, "Plant setup": page_setup, "Control room": page_control_room,
+ "Next-day check": page_check, "History": page_history}[ss.view]()
