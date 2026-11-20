@@ -42,6 +42,8 @@ The left menu has one screen per job:
 - *Remembers:* reject with a reason, and the agent offers to save it as a rule (keep at usual time, never start before, always finish by). Every later plan obeys it. The rules are listed, and can be removed, in **Factory memory**.
 - *Reacts:* after any re-plan the agent says what changed and why ("Clouds tomorrow. I moved … Still saves ₹1,100.").
 
+**Type anything.** The conversation box takes free text: "Approve", "No. The press line needs the night crew." (rejects and saves a rule), "Never start the oven before 8 pm", "Run the press line at 10 am", "Clouds tomorrow", "New order: grinding line, 400 kW for 4 hours…", "Yes, 10 am is fine", "Why move the compressors?", or any question. Plain code reads these offline; with an AI key the small model reads free wording and code checks every field before anything changes.
+
 Also from the deck: send the work order to the shift lead (logged), a **free bill check** on Upload data, the **shared-savings split** on Next-day check, **factory templates** (foundry, plastics, textiles, cold storage), names removed before any AI sees the data, and **Keep your settings** (download and load) on Plant setup.
 
 **Where data is kept on the hosted app.** Each browser tab has its own session: notes, kept machines, chat and rules-and-limits changes live there and end with the tab. Saved plant settings go to `plant_config.json` and the audit trail to `righthour_audit.sqlite` on the server's disk: shared by everyone using the app, and cleared when Streamlit restarts or redeploys. Use **Plant setup → Keep your settings** to keep your own copy.

@@ -627,5 +627,9 @@ def apply_learned_rules(machines_cfg: dict, shiftable: list[dict]) -> None:
 
 def learned_rule_text(lr: dict, names: dict) -> str:
     n = names.get(lr["machine"], lr["machine"])
-    return {"usual": f"{n} stays at its usual time", "not_before": f"{n} never starts before {hhmm(lr.get('hour', 0))}",
-            "finish_by": f"{n} always finishes by {hhmm(lr.get('hour', 24))}"}[lr["kind"]]
+    h = lr.get("hour")
+    if lr["kind"] == "not_before" and h is not None:
+        return f"{n} never starts before {hhmm(h)}"
+    if lr["kind"] == "finish_by" and h is not None:
+        return f"{n} always finishes by {hhmm(h)}"
+    return f"{n} stays at its usual time"

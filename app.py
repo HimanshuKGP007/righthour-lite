@@ -11,6 +11,7 @@ import datetime as dt
 from html import escape
 import io
 import json
+import re
 import time
 from pathlib import Path
 
@@ -451,22 +452,26 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
             ss.run, run_error = None, f"No plan could be made: {e}"
 
 
-def do_resume(value) -> None:
+def do_resume(value, echo: bool = True) -> None:
+    """Hand the manager's answer to the agent. echo=False when the manager's own words are already in the chat."""
     r = ss.run
-    with st.spinner("Re-planning..."):
-        r["state"], r["pending"] = resume(r["graph"], r["cfg"], value)
+    opts = (r.get("pending") or {}).get("options") or []
+    r["state"], r["pending"] = resume(r["graph"], r["cfg"], value)
     if isinstance(value, str):                       # the manager picked a rule to relax
-        opt = next((o for o in (r["state"].get("options") or []) if o["id"] == value), None)
-        say("manager", f"Yes. {opt['text'] if opt else 'Relax that rule'}.")
+        opt = next((o for o in opts if o["id"] == value), None)
+        if echo:
+            say("manager", f"Yes. {opt['text'] if opt else 'Relax that rule'}.")
         sav = r["state"].get("saving_rs")
         say("agent", f"Done. {('Saves about ' + rs(round(sav, -2)) + ' today.') if sav else 'The order fits now.'}")
     elif value.get("action") == "approve":
-        say("manager", "Approve." + (f" {value.get('note')}" if value.get("note") else ""))
+        if echo:
+            say("manager", "Approve." + (f" {value.get('note')}" if value.get("note") else ""))
         say("agent", "Approved. The work order is ready for the shift lead.")
     elif value.get("action") == "reject":
-        say("manager", f"No. {value.get('reason', '')}")
-        say("agent", "Understood. The usual schedule stays. Should I remember this as a rule?")
-        ss.ask_rule = True
+        if echo:
+            say("manager", f"No. {value.get('reason', '')}")
+        say("agent", "Understood. The usual schedule stays." + (" Should I remember this as a rule?" if echo else ""))
+        ss.ask_rule = echo
     elif value.get("action") == "edit":
         ok = r["state"].get("status") != "edit_blocked"
         say("manager", "Use my edited times.")
@@ -1907,11 +1912,132 @@ def morning_brief() -> None:
                 st.rerun()
 
 
+# ---- the manager types anything; the agent works out what it means and acts (deck: the four moments)
+def _rid() -> str:
+    return ss.run["ctx"].run_id if ss.get("run") else "chat"
+
+
+def read_message(text: str, ms: list[dict], waiting: str | None) -> dict:
+    """Plain code reads the message. With an AI key, the small model reads free wording first; code then checks every field."""
+    base = ASK.parse_message(text, ms, waiting)
+    if not LLM.live:
+        return base
+    try:
+        menu = "; ".join(f"{m['id']} = {m['name']}" for m in ms)
+        raw, tin, tout = LLM.complete(MODELS[ss.provider]["T1"], ASK.LLM_PARSE + menu, text, 150)
+        js = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
+        ids = {m["id"] for m in ms}
+        h = js.get("hour")
+        got = {"intent": js.get("intent") if js.get("intent") in ASK.INTENTS else base["intent"],
+               "machine": js.get("machine") if js.get("machine") in ids else base["machine"],
+               "hour": int(h) if isinstance(h, (int, float)) and 0 <= h <= 24 and str(int(h)) in text + str(ASK.find_hour(text)) else base["hour"],
+               "kind": js.get("kind") if js.get("kind") in ("usual", "not_before", "finish_by", "Cloudy day", "Clear sky") else base["kind"],
+               "text": text}
+        ss.audit.log(_rid(), "Orchestrator", "constraint_parse", tier="T1", model=MODELS[ss.provider]["T1"], mode="live API",
+                     reason="read the manager's message", detail={"message": text, "read_as": {k: v for k, v in got.items() if k != "text"}})
+        return got
+    except Exception:  # noqa: BLE001  a failed or odd answer falls back to plain code
+        return base
+
+
+def _save_rule_quiet(lr: dict) -> None:
+    cfg = ss.cfg
+    cfg["machines"] = {**cfg["machines"], "learned_rules": cfg["machines"].get("learned_rules", []) + [lr]}
+    CFG.save(cfg)
+    ss.cfg_version += 1
+    ss.audit.log(_rid(), "Factory memory", "learn_rule", tier="human", mode="human", reason=lr.get("reason") or "manager's rule", detail=lr)
+    ss.trigger_plan = True
+
+
+def handle_chat(preset: str | None = None) -> None:
+    """Runs before the page is drawn, so it may change the plan inputs and ask for a new plan."""
+    text = (preset or ss.get("cv_msg") or "").strip()
+    if not text:
+        return
+    r = ss.run or {}
+    st_, pend = r.get("state") or {}, r.get("pending")
+    ms = (st_.get("problem") or {}).get("shiftable") or MACH["shiftable"]
+    names = {m["id"]: m["name"] for m in ms}
+    waiting = pend["type"] if pend else None
+    p = read_message(text, ms, waiting)
+    say("manager", text)
+    mid, hour, kind, it = p["machine"], p["hour"], p["kind"], p["intent"]
+    m = next((x for x in ms if x["id"] == mid), None)
+    if it == "approve":
+        if waiting == "approval":
+            ss.audit.log(r["ctx"].run_id, "Plant manager", "approve", tier="human", mode="human", reason=text)
+            do_resume({"action": "approve"}, echo=False)
+        else:
+            say("agent", "Nothing is waiting for approval right now.")
+    elif it == "reject":
+        if waiting == "approval":
+            do_resume({"action": "reject", "reason": text}, echo=False)
+        if m:                                                    # REMEMBERS: the reason names a machine, so it becomes a rule
+            lr = {"machine": mid, "kind": kind or "usual", "hour": hour, "reason": text, "ts": f"{dt.datetime.now():%Y-%m-%d %H:%M}"}
+            ss.ask_rule = False
+            say("agent", f"Saved as a rule. {A.learned_rule_text(lr, names)}. Planning again.")
+            _save_rule_quiet(lr)
+    elif it == "rule" and m:
+        lr = {"machine": mid, "kind": kind or "usual", "hour": hour, "reason": text, "ts": f"{dt.datetime.now():%Y-%m-%d %H:%M}"}
+        if lr["kind"] != "usual" and hour is None:
+            say("agent", f"Which time? For example: “{m['name']} must finish by 6 pm”.")
+        else:
+            say("agent", f"Saved as a rule. {A.learned_rule_text(lr, names)}. Planning again.")
+            _save_rule_quiet(lr)
+    elif it == "pin" and m and hour is not None:
+        if hour + m["duration_h"] > 24:
+            say("agent", f"{m['name']} runs {m['duration_h']:g} h, so it cannot start at {hour:02d}:00.")
+        else:
+            ss.pins = {**ss.pins, mid: hour}
+            ss.audit.log(_rid(), "Plant manager", "plan_update", tier="human", mode="human", reason=text,
+                         detail={"kept": {mid: f"{hour:02d}:00"}})
+            say("agent", f"OK. {m['name']} at {_ampm(hour)}. Planning the rest around it.")
+            ss.trigger_plan = True
+    elif it == "weather":                                         # REACTS: the plan follows the weather
+        ss.w_weather = kind or "Cloudy day"
+        say("agent", "Got it. Checking the plan against the new weather.")
+        ss.trigger_plan = True
+    elif it == "order":
+        ss.notes_rows = ss.notes_rows + [{"Name": "New order (from chat)", "Kind": "New order", "Note, in plain words": text,
+                                          "Could start as early as": None, "Could finish as late as": None, "Side cost if relaxed": ""}]
+        ss.notes_ver += 1
+        say("agent", "Added the order to today's notes. Planning again.")
+        ss.trigger_plan = True
+    elif it == "relax_yes" and waiting == "choose_relaxation":   # RE-PLANS: the manager answers the agent's question
+        feas = [o for o in pend["options"] if o["feasible"]]
+        pick = next((o for o in feas if hour is not None and str(hour).zfill(2) in o["text"]), None) or \
+            next((o for o in feas if o["id"] == pend.get("recommended")), None)
+        if pick:
+            do_resume(pick["id"], echo=False)
+        else:
+            say("agent", "No flexible rule makes the plan fit. Loosen a machine's hours in Plant setup.")
+    elif it == "why":                                             # EXPLAINS
+        mv = _moves(st_)
+        hit = [(x, h) for x, h in mv if x["id"] == mid] if mid else mv
+        if mid and not hit and m:
+            say("agent", f"{m['name']} stays at its usual time: no cheaper hour fits its rules.")
+        for x, h in hit or []:
+            say("agent", A.why_moved(st_["problem"], x, h))
+        if not hit and not mid:
+            say("agent", st_.get("explanation") or "Generate a plan first.")
+    else:
+        say("agent", ask_answer(text))
+
+
+def chat_chips() -> list[str]:
+    if pending and pending.get("type") == "choose_relaxation":
+        return ["Yes, that is fine", "Why?"]
+    if pending and pending.get("type") == "approval":
+        return ["Approve", "Why these moves?", "Clouds tomorrow", "No. The press line needs the night crew."]
+    return ["What's the status?", "How much have we saved?", "Clouds tomorrow"]
+
+
 def conversation() -> None:
     """The four moments with the manager, as they happen: re-plans, explains, remembers, reacts."""
     with st.container(border=True, key="convo"):
         card_title("forum", "Talk to the agent", "Every message is saved in the audit trail")
-        bubbles = "".join(f"<div class='b {m['who']}'><b>{'Agent' if m['who'] == 'agent' else 'You'}:</b> {escape(m['text'])}<i>{m['ts']}</i></div>"
+        bubbles = "".join(f"<div class='b {m['who']}'><b>{'Agent' if m['who'] == 'agent' else 'You'}:</b> "
+                          f"{re.sub(r'[*][*](.+?)[*][*]', r'<b>\1</b>', escape(m['text'])).replace(chr(10), '<br>')}<i>{m['ts']}</i></div>"
                           for m in reversed(ss.feed[-30:])) or "<div class='rh-note'>The agent's messages appear here.</div>"
         html(f"<div class='rh-chat'>{bubbles}</div>")
         # RE-PLANS: the agent asks which rule may flex
@@ -1954,16 +2080,13 @@ def conversation() -> None:
                 ss.ask_rule = False
                 say("agent", "Fine. Only this plan was rejected.")
                 st.rerun()
-        # EXPLAINS: ask why about any machine
-        mv = _moves(state) if run else []
-        if mv and not ss.get("ask_rule"):
-            c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
-            pick = c1.selectbox("Ask why about", [m["id"] for m, _ in mv], format_func={m["id"]: m["name"] for m, _ in mv}.get, key="cv_whym")
-            if c2.button("Ask", key="cv_ask", width="stretch"):
-                m, h = next((m, h) for m, h in mv if m["id"] == pick)
-                say("manager", f"Why move the {m['name'].split(' (')[0].lower()} to {_ampm(h)}?")
-                say("agent", A.why_moved(state["problem"], m, h))
-                st.rerun()
+        # anything else: the manager types freely, or taps an example
+        if not ss.get("ask_rule") and not ss.get("rejecting"):
+            chips = chat_chips()
+            cols = st.columns(len(chips))
+            for c, t in zip(cols, chips):
+                c.button(t, key=f"chip_{t}", on_click=handle_chat, args=(t,), width="stretch", type="tertiary")
+        st.chat_input("Ask, tell or instruct the agent…", key="cv_msg", on_submit=handle_chat)
 
 
 def work_order_card() -> None:
