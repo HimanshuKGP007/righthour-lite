@@ -10,6 +10,7 @@ from dataclasses import dataclass
 # provider's pricing page before presenting.
 MODELS = {
     "Groq": {"T1": "llama-3.1-8b-instant", "T2": "llama-3.3-70b-versatile"},
+    "Grok": {"T1": "grok-3-mini", "T2": "grok-3"},
     "Claude": {"T1": "claude-haiku-5-5", "T2": "claude-sonnet-5-5"},
     "Offline": {"T1": "llama-3.1-8b-instant", "T2": "llama-3.3-70b-versatile"},  # named in the log, never called
 }
@@ -27,6 +28,12 @@ _ACTIVE = {"provider": "Groq"}
 def set_provider(provider: str) -> None:
     """The UI switch. Every route() call after this picks that provider's models."""
     _ACTIVE["provider"] = provider if provider in MODELS else "Groq"
+
+
+def set_models(provider: str, small: str, large: str) -> None:
+    """The model picker: the small and the large model chosen on screen replace the built-in names for that provider."""
+    if provider in MODELS and provider != "Offline" and small and large:
+        MODELS[provider] = {"T1": small, "T2": large}
 
 
 def tier_model(tier: str) -> str | None:
@@ -77,7 +84,7 @@ def route(task: str, attempt: int = 1, input_tokens: int = 0, novel: bool = Fals
 def cost_usd(model: str | None, tokens_in: int, tokens_out: int) -> float:
     if not model:
         return 0.0
-    pin, pout = PRICES[model]
+    pin, pout = PRICES.get(model, (0.0, 0.0))   # a model chosen on screen may have no price on file: cost shows as $0
     return tokens_in / 1e6 * pin + tokens_out / 1e6 * pout
 
 

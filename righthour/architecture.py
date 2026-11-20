@@ -19,15 +19,17 @@ E = [
     ("weather", "Weather", ["sun and heat forecast"], "data.solar_forecast", {"solar_forecast"}, "in", 22, 472, 186, 92),
     ("collect", "1 Collect", ["pulls all inputs"], "agents.step_data", {"forecast_load"}, "pipe", 270, 100, 158, 120),
     ("check", "2 Check", ["flags bad readings"], "data.validate_load", {"validate_data"}, "pipe", 270, 236, 158, 120),
-    ("store", "3 Store", ["one vault per", "factory"], "audit.py · SQLite", {"validate_data", "forecast_load"}, "pipe", 270, 372, 158, 120),
-    ("orch", "Orchestrator agent", ["Plans the steps, calls the tools,", "re-plans if a step fails"], "graph.py · agents.step_*", {"orchestrate"}, "dark", 476, 92, 438, 84),
-    ("price", "Price", ["reads price orders"], "step_analysis", {"tariff_lookup", "tariff_parse"}, "tool", 476, 196, 138, 96),
-    ("forecast", "Forecast", ["tomorrow's use and sun"], "forecast_load", {"forecast_load", "solar_forecast"}, "tool", 626, 196, 138, 96),
-    ("rules", "Rules", ["turns notes into rules"], "parse_note", {"constraint_parse"}, "tool", 776, 196, 138, 96),
+    ("store", "3 Store", ["one vault per", "factory"], "audit.py (SQLite)", {"validate_data", "forecast_load"}, "pipe", 270, 372, 158, 120),
+    ("orch", "Orchestrator agent", ["Plans the steps, calls the tools,", "re-plans if a step fails"], "graph.py, agents.step_*", {"orchestrate"}, "dark", 476, 92, 438, 84),
+    ("price", "Price", ["reads price", "orders"], "step_analysis", {"tariff_lookup", "tariff_parse"}, "tool", 476, 196, 138, 96),
+    ("forecast", "Forecast", ["tomorrow's use", "and sun"], "forecast_load", {"forecast_load", "solar_forecast"}, "tool", 626, 196, 138, 96),
+    ("rules", "Machines", ["turns notes", "into rules"], "parse_note", {"constraint_parse"}, "tool", 776, 196, 138, 96),
     ("opt", "Optimiser (OR-Tools)", ["Finds the cheapest plan that keeps", "every machine rule and deadline."], "optimiser.optimise_schedule", {"optimise"}, "dark", 460, 352, 300, 116),
     ("guard", "Guardrails", ["Rule check. Every", "step logged."], "agents.policy_check", {"policy_check"}, "green", 780, 352, 160, 116),
-    ("manager", "Manager decides", ["Approve, edit or reject", "the plan"], "app.py · graph.py", {"work_order", "reject", "relax_rule"}, "human", 1002, 340, 216, 112),
-    ("runs", "Plan runs", ["People switch the machines"], "agents.step_action · work order", {"work_order"}, "light", 1002, 486, 216, 84),
+    ("router", "Router", ["Picks the model for each", "AI step. Maths never uses AI."], "router.py, route", set(), "tool", 460, 486, 236, 86),
+    ("memory", "Factory memory", ["Machine profiles, rules", "and past “no” answers"], "audit.py, config.py", {"reject", "learn", "verify_savings", "setup_saved"}, "tool", 712, 486, 228, 86),
+    ("manager", "Manager decides", ["Approve, edit or reject", "the plan"], "app.py, graph.py", {"work_order", "reject", "relax_rule"}, "human", 1002, 340, 216, 112),
+    ("runs", "Plan runs", ["People switch the machines"], "agents.step_action", {"work_order"}, "light", 1002, 486, 216, 84),
 ]
 BY_ID = {e[0]: e for e in E}
 
@@ -40,6 +42,7 @@ def element_states(rows: list[dict], pending: dict | None, verified: bool, loade
         st[eid] = "ran" if seen & actions else "wait"
     if loaded:
         st["meters"] = "ran"
+    st["router"] = "ran" if any(r.get("tier") in ("T1", "T2") for r in rows) else "wait"
     if pending and pending.get("type") == "approval":
         st["manager"] = "ask"
     elif pending and pending.get("type") == "choose_relaxation":
@@ -51,11 +54,22 @@ def element_states(rows: list[dict], pending: dict | None, verified: bool, loade
     return st
 
 
-STATE_TEXT = {"ran": "ran this run", "wait": "not run yet", "ask": "needs you now", "part": "logged only"}
+STATE_TEXT = {"ran": "done this run", "wait": "not run yet", "ask": "your turn", "part": "logged only"}
+BADGE = {"ran": "Done", "ask": "Your turn", "part": "Logged"}
 
 
 def _lines(x: float, y: float, lines: list[str], cls: str, dy: float = 15) -> str:
     return "".join(f"<text class='{cls}' x='{x}' y='{y + i * dy}'>{escape(t)}</text>" for i, t in enumerate(lines))
+
+
+def _badge(x: float, y: float, w: float, state: str) -> str:
+    """A word, not a dot: the state is written on the box."""
+    word = BADGE.get(state)
+    if not word:
+        return ""
+    bw = 8 + 7.2 * len(word)
+    return (f"<g class='bd'><rect x='{x + w - bw - 10}' y='{y - 11}' width='{bw}' height='22' rx='6'/>"
+            f"<text x='{x + w - bw / 2 - 10}' y='{y + 4}' text-anchor='middle'>{word}</text></g>")
 
 
 def svg(states: dict[str, str], selected: str | None = None) -> str:
@@ -63,8 +77,8 @@ def svg(states: dict[str, str], selected: str | None = None) -> str:
            "<defs><marker id='ah' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'>"
            "<path d='M0 0L10 5L0 10z' fill='context-stroke'/></marker></defs>"]
     # panels
-    for x, y, w, h, label, cls in [(10, 20, 212, 560, "INPUTS · READ-ONLY", "p"), (250, 20, 712, 560, "RIGHTHOUR CLOUD · EACH CUSTOMER KEPT SEPARATE", "p"),
-                                   (460, 56, 484, 250, "AGENT TEAM", "p2"), (990, 300, 240, 290, "FACTORY TEAM", "p")]:
+    for x, y, w, h, label, cls in [(10, 20, 212, 560, "Inputs (read-only)", "p"), (250, 20, 712, 560, "RightHour cloud (each customer kept separate)", "p"),
+                                   (460, 56, 484, 250, "Agent team", "p2"), (990, 300, 240, 290, "Factory team", "p")]:
         out.append(f"<rect class='dg-panel {cls}' x='{x}' y='{y}' width='{w}' height='{h}' rx='10'/>")
         out.append(f"<text class='dg-pl' x='{x + 14}' y='{y + 24 if cls != 'p2' else y + 22}'>{label}</text>")
     out.append("<rect class='dg-pipe' x='262' y='56' width='174' height='500' rx='10'/>")
@@ -98,7 +112,7 @@ def svg(states: dict[str, str], selected: str | None = None) -> str:
         s = states[eid]
         out.append(f"<g class='dg-box {kind} s-{s}{' sel' if selected == eid else ''}' data-id='{eid}'><title>{escape(title)}: {STATE_TEXT[s]}. Code: {escape(code)}</title>"
                    f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='8'/>"
-                   f"<circle class='dot' cx='{x + w - 14}' cy='{y + 14}' r='5'/>"
+                   f"{_badge(x, y, w, s)}"
                    f"<text class='dg-t' x='{x + 14}' y='{y + 26}'>{escape(title)}</text>"
                    f"{_lines(x + 14, y + 46, sub, 'dg-s')}"
                    f"<text class='dg-code' x='{x + 14}' y='{y + h - 10}'>{escape(code)}</text></g>")
@@ -110,7 +124,7 @@ def mapping_rows(rows: list[dict], states: dict[str, str]) -> list[dict]:
     """One line per diagram element: where it lives in the code, and what the run log shows for it."""
     out = []
     for eid, title, _sub, code, actions, *_ in E:
-        hits = [r for r in rows if r["action"] in actions]
+        hits = [r for r in rows if r["action"] in actions or (eid == "router" and r["tier"] in ("T1", "T2"))]
         tiers = sorted({r["tier"] for r in hits})
         modes = sorted({r["mode"] for r in hits})
         out.append({"Diagram box": title, "Where in the prototype": code, "Status": STATE_TEXT[states[eid]],
@@ -179,7 +193,15 @@ BOX_INFO: dict[str, dict] = {
                  "comes_from": ["Today: the average of the same weekday over the 4 weeks before the plan day, times a learned correction. Solar from Weather.",
                                 "Live: the same method on the meter store, with the correction learned from each next-day check."],
                  "code": "righthour/data.py · forecast_load, solar_forecast", "produces": "kW and power factor for each 15-minute slot."},
-    "rules": {"title": "Rules", "what": "Turns the day's notes into rules the solver can use.",
+    "router": {"title": "Router", "what": "Picks the model for every AI step. Maths and checks always go to code, never to a model.",
+               "comes_from": ["Today: fixed rules in code. Routine text goes to a small model. A step that fails its check twice, a plan that does not fit, or a free question goes to a large model.",
+                              "Live: the same rules, plus a privacy setting that keeps routine steps on a model running at the plant."],
+               "code": "righthour/router.py · route", "produces": "One model choice per step, with the reason and the cost logged."},
+    "memory": {"title": "Factory memory", "what": "Keeps what the agent has learned about this factory: machine profiles, rules and past “no” answers.",
+               "comes_from": ["Today: the Setup tables and the audit log. A rejected plan is logged with its reason.",
+                              "Live: a store per factory. A manager confirms each rule the agent learned before it is used."],
+               "code": "righthour/audit.py · config.py", "produces": "Rules and corrections that make each day's plan fit better."},
+    "rules": {"title": "Machines", "what": "Turns the day's notes into rules the solver can use.",
               "comes_from": ["Today: the notes you type in the Plan tab. A small model (Groq or Claude) reads them, or simple offline reading.",
                              "Live: notes from supervisors, or fields from the factory system, read the same way."],
               "code": "righthour/agents.py · parse_note", "produces": "Fixed batches and new orders with hours and kW."},

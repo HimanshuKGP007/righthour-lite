@@ -25,8 +25,9 @@ from righthour import live as LIVE
 from righthour.agents import Context, lakh, parse_tariff, rs, verify_and_learn
 from righthour.audit import AuditLog
 from righthour.graph import resume, start
-from righthour.llm import KEY_ENV, PROVIDERS, LLMClient, default_provider
-from righthour.router import MODELS, PRICES, set_provider
+from righthour import llm as LLMMOD
+from righthour.llm import KEY_ENV, LABEL, PROVIDERS, LLMClient, default_provider, suggest_models
+from righthour.router import MODELS, PRICES, set_models, set_provider
 from righthour.tariff import N_SLOTS, SLOTS_PER_HOUR, validate_tariff
 from righthour.theme import (AMBER, AMBER_TEXT, CSS, FONT, GREEN, ICONS, INK, MUTED, NAVY, NAVY_10, NAVY_30, NAVY_60, RED,
                              RULE)
@@ -147,7 +148,7 @@ ss.setdefault("w_plan_at", dt.time(18, 0))
 ss.setdefault("w_provider", ss.provider)
 ss.setdefault("pd_for", None)
 for _k in ["w_weather", "w_goal", "w_live", "w_auto_adv", "w_adv_s", "w_auto_plan", "w_plan_at", "w_provider", "w_plan_day",
-           "key_Groq", "key_Claude", "view_nav"]:
+           "key_Groq", "key_Grok", "key_Claude", "view_nav"]:
     if _k in ss:                       # keep values alive while their widget is drawn on another screen
         ss[_k] = ss[_k]
 
@@ -167,6 +168,10 @@ weather, goal = ss.w_weather, ss.w_goal
 ss.provider = ss.w_provider or ss.provider
 LLM = LLMClient(ss.provider, api_key=ss.get(f"key_{ss.provider}") or None)
 set_provider(ss.provider)
+ss.setdefault("models", {})          # the small and large model chosen for each provider
+ss.setdefault("model_lists", {})     # live model lists, asked of each provider with your key
+for _p, _m in ss.models.items():
+    set_models(_p, _m.get("T1", ""), _m.get("T2", ""))
 go_btn = bool(ss.get("go_btn")) or bool(ss.get("go_btn_c"))
 
 # live mode switches happen here, before anything is drawn
@@ -218,17 +223,77 @@ def live_controls() -> None:
         st.slider("Seconds between days", 5, 120, key="w_adv_s", disabled=not ss.w_auto_adv)
         st.checkbox("Plan automatically when new readings arrive", key="w_auto_plan")
         st.time_input("Also plan every day at", key="w_plan_at", help="Checked while the app is open. A server would run this as a scheduled job.")
-        html(f"<div class='rh-pill live'><i></i>Live: {len(ss.live_future)} days still to arrive</div>")
+        html(f"<div class='rh-pill live'>Live: {len(ss.live_future)} days still to arrive</div>")
+
+
+def _pick_model(tier: str) -> None:
+    ss.models.setdefault(ss.provider, {})[tier] = ss[f"m_{tier}_{ss.provider}"]
+    set_models(ss.provider, ss.models[ss.provider].get("T1", ""), ss.models[ss.provider].get("T2", ""))
+    ss.model_ok = None
+
+
+def _load_models(force: bool = False) -> dict:
+    """Ask the provider which models this key can use. Cached per provider and key; refresh on demand."""
+    tag = hash(LLM.key)
+    got = ss.model_lists.get(ss.provider)
+    if got and got["tag"] == tag and not force:
+        return got
+    try:
+        ids = LLM.list_models()
+        got = {"tag": tag, "ids": ids, "err": ""}
+        cur = ss.models.get(ss.provider, {})
+        if ids and (cur.get("T1") not in ids or cur.get("T2") not in ids):   # a saved or built-in name that no longer exists
+            small, large = suggest_models(ss.provider, ids)
+            ss.models[ss.provider] = {"T1": small, "T2": large}
+            set_models(ss.provider, small, large)
+            for t in ("T1", "T2"):
+                ss.pop(f"m_{t}_{ss.provider}", None)
+    except Exception as e:  # noqa: BLE001
+        got = {"tag": tag, "ids": [], "err": str(e)}
+    ss.model_lists[ss.provider] = got
+    return got
 
 
 def model_controls() -> None:
-    st.segmented_control("Provider", list(PROVIDERS), selection_mode="single", label_visibility="collapsed", key="w_provider")
-    if ss.provider != "Offline":
-        st.text_input(f"{ss.provider} API key", type="password", key=f"key_{ss.provider}",
-                      placeholder=f"or set {KEY_ENV[ss.provider]}", help="Kept in this browser session only.")
-    html(f"<div class='rh-pill {'live' if LLM.live else ''}'><i></i>{LLM.label}</div>"
-         f"<div class='rh-note' style='margin-top:8px'>Small steps: <span class='mono'>{MODELS[ss.provider]['T1']}</span><br>"
-         f"Large steps: <span class='mono'>{MODELS[ss.provider]['T2']}</span><br>Numbers never come from the model.</div>")
+    st.segmented_control("Provider", list(PROVIDERS), selection_mode="single", label_visibility="collapsed", key="w_provider",
+                         format_func=lambda p: LABEL[p])
+    if ss.provider == "Offline":
+        html("<div class='rh-note' style='margin-top:6px'>Everything runs on this computer with fixed templates. No AI is called. "
+             "Pick Groq, Grok or Claude to use a language model for the text steps. Numbers never come from a model.</div>")
+        return
+    env_set = bool(__import__("os").environ.get(KEY_ENV[ss.provider]))
+    st.text_input(f"{LABEL[ss.provider]} API key", type="password", key=f"key_{ss.provider}",
+                  placeholder=("found in the app's secrets" if env_set else f"or set {KEY_ENV[ss.provider]}"),
+                  help="Kept in this browser session only. On the hosted app, add it under Settings, Secrets.")
+    if not LLM.live:
+        html(f"<div class='rh-note'>Add a key and the list of models you can use appears here.</div>")
+        return
+    got = _load_models()
+    if got["err"]:
+        html(f"<div class='rh-card alert' style='padding:10px 12px;margin:6px 0'><h4>{ICONS['alert']}Could not load the model list</h4>"
+             f"<p style='font-size:13px'>{escape(got['err'])}</p><p class='rh-note'>Check the key. Then press Refresh models.</p></div>")
+    ids = got["ids"] or sorted({MODELS[ss.provider]["T1"], MODELS[ss.provider]["T2"]})
+    cur = ss.models.get(ss.provider, MODELS[ss.provider])
+    for t, label, hint in (("T1", "Small model: routine steps", "Fast and cheap. Reads notes, writes the plan in words."),
+                           ("T2", "Large model: hard cases", "Used when the small model fails twice, or no plan fits.")):
+        opts = ids if cur.get(t) in ids else [cur.get(t)] + ids
+        st.selectbox(label, opts, index=opts.index(cur.get(t)), key=f"m_{t}_{ss.provider}", on_change=_pick_model, args=(t,), help=hint)
+    b1, b2 = st.columns(2)
+    if b1.button("Refresh models", width="stretch", key=f"mref_{ss.provider}"):
+        _load_models(force=True)
+        st.rerun()
+    if b2.button("Test connection", width="stretch", key=f"mtest_{ss.provider}"):
+        try:
+            LLM.complete(MODELS[ss.provider]["T1"], "Reply with the single word OK.", "ping", 8)
+            ss.model_ok = f"Connected. {MODELS[ss.provider]['T1']} answered."
+        except Exception as e:  # noqa: BLE001
+            ss.model_ok = f"Failed: {e}"
+    if ss.get("model_ok"):
+        bad = ss.model_ok.startswith("Failed")
+        html(f"<div class='rh-note' style='color:var(--{'red' if bad else 'green'});margin-top:6px'>{escape(ss.model_ok)}</div>")
+    elif LLMMOD.LAST_ERROR["text"]:
+        html(f"<div class='rh-note' style='color:var(--red);margin-top:6px'>Last AI call failed: {escape(LLMMOD.LAST_ERROR['text'])}</div>")
+    html(f"<div class='rh-pill live'>{LLM.label}</div><div class='rh-note' style='margin-top:6px'>Numbers never come from the model.</div>")
 
 
 def goto(view: str, box: str | None = None) -> None:
@@ -244,9 +309,12 @@ with st.sidebar:
          f"{ICONS['clock']}</div><div><div style='font-size:17px;font-weight:650;color:{NAVY};letter-spacing:-.02em'>RightHour Lite</div>"
          f"<div class='rh-note'>Day-ahead ToD bill optimiser</div></div></div>")
     if ss.view == "Manager console":
-        html("<div class='rh-card panel' style='margin-top:14px'><h4>All controls are on the console</h4>"
-             "<p class='rh-note'>Data, the day to plan, weather, goal, live mode and the language model sit in the console's Inputs column. "
-             "Every panel there links to its box on the design diagram.</p></div>")
+        html("<div class='rh-card panel' style='margin-top:14px'><h4>How to read this screen</h4>"
+             "<p class='rh-note'><span class='rh-tag ok'>Done</span> the step ran.<br><span class='rh-tag ask'>Your turn</span> a person must act.</p>"
+             "<p class='rh-note' style='margin-top:10px'><b>Who did each step</b><br>"
+             "<span class='rh-chip t0'>T0</span> plain code. No AI.<br><span class='rh-chip t1'>T1</span> small AI model.<br>"
+             "<span class='rh-chip t2'>T2</span> large AI model, only when needed.<br><span class='rh-chip human'>human</span> a person.</p>"
+             "<p class='rh-note' style='margin-top:10px'>The AI never makes a number. Code does the maths. Code checks every sentence.</p></div>")
     else:
         st.subheader("The day to plan", divider="gray")
         run_controls("side")
@@ -351,10 +419,32 @@ def step_strip(state: dict | None, pending: dict | None, verified: bool) -> None
          ("Approved, work order issued" if status == "work_order_issued" else "Plan, savings, approval")),
         ("Learning", "ok" if verified else "wait", "Actual vs expected checked" if verified else "Next-day check"),
     ]
-    icon = {"done": "check", "ok": "check", "alert": "alert", "active": "person", "wait": "dot"}
-    cells = "".join(f"<div class='rh-node {c}'><div class='rh-dot'>{ICONS[icon[c]]}</div><div class='t'>{t}</div><div class='s'>{d}</div></div>"
-                    for t, c, d in items)
-    html(f"<div class='rh-pipe'>{cells}</div>")
+    word = {"done": "Done", "ok": "Done", "alert": "Your turn", "active": "Your turn", "wait": "Waiting"}
+    cells = "".join(f"<li class='{c}'><div class='top'><span class='no'>{i}</span><span class='sw'>{word[c]}</span></div>"
+                    f"<div class='t'>{t}</div><div class='s'>{d}</div></li>" for i, (t, c, d) in enumerate(items, 1))
+    html(f"<ol class='rh-steps' aria-label='Steps for the day'>{cells}</ol>")
+
+
+def next_step(state: dict | None, pending: dict | None, verified: bool) -> None:
+    """One sentence that says what to do now. The class sees the loop; the manager sees the next action."""
+    status = (state or {}).get("status", "")
+    if ss.hist is None:
+        cls, lbl, msg = "", "Start here.", "Load the meter data in <b>Inputs</b>, then press <b>Generate plan</b>."
+    elif not state:
+        cls, lbl, msg = "", "Next.", "Choose the day and the goal, then press <b>Generate plan</b>. The agent does the rest."
+    elif pending and pending.get("type") == "choose_relaxation":
+        cls, lbl, msg = "you", "Your turn.", "No plan fits every rule. Pick which flexible rule the agent may relax."
+    elif pending and pending.get("type") == "approval":
+        cls, lbl, msg = "you", "Your turn.", "Check the saving and the schedule, then <b>approve</b> or <b>reject</b> the plan."
+    elif verified:
+        cls, lbl, msg = "done", "Done.", "The meters confirmed the saving. The agent kept what it learned for the next plan."
+    elif status == "work_order_issued":
+        cls, lbl, msg = "", "Plan approved.", "Machines run on the work order. Next day, check the saving against the real readings."
+    elif status == "rejected":
+        cls, lbl, msg = "", "Plan rejected.", "Your reason is saved. Change the goal or the notes and generate again."
+    else:
+        cls, lbl, msg = "", "Next.", "Generate the plan again with the new settings."
+    html(f"<div class='rh-next {cls}'><span class='lbl'>{lbl}</span><span>{msg}</span></div>")
 
 
 # ------------------------------------------------------------------ charts
@@ -1070,7 +1160,8 @@ def audit_tab() -> None:
 # One screen in three columns that follow the design diagram from left to right: what goes in, what the agents are doing,
 # what comes out. Every panel carries a link to its box on the clickable diagram (Control room), and the small diagram at
 # the top opens any box directly.
-STATE_WORD = {"ran": "ran this run", "wait": "not run yet", "ask": "needs you", "part": "logged only"}
+STATE_WORD = {"ran": "done this run", "wait": "not run yet", "ask": "your turn", "part": "logged only"}
+TAG = {"ran": "Done", "ask": "Your turn", "part": "Logged"}
 
 
 def _box_state(eid: str, astates: dict) -> str:
@@ -1079,22 +1170,23 @@ def _box_state(eid: str, astates: dict) -> str:
 
 SHORT = {"meters": "Smart meters", "factory": "Factory systems", "bill": "Power bill", "orders": "Price orders", "weather": "Weather",
          "collect": "1 Collect", "check": "2 Check", "store": "3 Store", "orch": "Orchestrator", "price": "Price", "forecast": "Forecast",
-         "rules": "Rules", "opt": "Optimiser", "guard": "Guardrails", "manager": "Manager decides", "runs": "Plan runs",
+         "rules": "Machines", "router": "Router", "memory": "Factory memory", "opt": "Optimiser", "guard": "Guardrails", "manager": "Manager decides", "runs": "Plan runs",
          "loop_no": "Every no", "loop_day": "Next-day loop"}
 
 
 def card_head(title: str, box: str, astates: dict, sub: str = "", key: str | None = None) -> None:
-    """Panel header: status dot from the run log, title, and a link to the same box on the design diagram."""
+    """Panel header: the title, the state in words (never a dot), and a link to the same box on the design diagram."""
     s = _box_state(box, astates)
-    c1, c2 = st.columns([1.45, 1], vertical_alignment="center")
-    c1.markdown(f"<div class='rh-ch'><span class='rh-sd {s}' title='{STATE_WORD[s]}'></span>{title}</div>", unsafe_allow_html=True)
-    c2.button(f"{SHORT[box]} ↗", key=key or f"lk_{box}_{title}", type="tertiary", on_click=goto, width="stretch",
+    c1, c2 = st.columns([1.7, 1], vertical_alignment="center")
+    tag = f"<span class='rh-tag {s}'>{TAG[s]}</span>" if s in TAG else ""
+    c1.markdown(f"<div class='rh-ch'>{title}{tag}</div>", unsafe_allow_html=True)
+    c2.button("On the diagram ↗", key=key or f"lk_{box}_{title}", type="tertiary", on_click=goto, width="stretch",
               args=("Control room", box), help=f"Open “{ARCH.info(box)['title']}” on the design diagram: where its data comes from, "
                                                f"what it did in this run ({STATE_WORD[s]}), and its full settings.")
 
 
 def section(n: str, title: str, desc: str) -> None:
-    html(f"<div class='rh-sec'><span class='n'>{n}</span><span class='t'>{title}</span><span class='d'>{desc}</span></div>")
+    html(f"<div class='rh-sec'><span class='t'>{title}</span><span class='d'>{desc}</span></div>")
 
 
 def _mini_fig(height: int = 190) -> go.Figure:
@@ -1182,7 +1274,7 @@ def c_notes(astates) -> None:
         b2.button("Machines & rules ↗", width="stretch", key="c_mach", on_click=goto, args=("Control room", "factory"))
         m, r = MACH["shiftable"], [x for x in MACH["rules"] if x["type"] == "no_overlap"]
         html(f"<div class='rh-note'>{len(m)} machines can move ({sum(x['kw'] for x in m):,.0f} kW in all); {len(r)} crew rule(s). "
-             f"The notes are read by the Rules tool ({LLM.label}).</div>")
+             f"The notes are read by the Machines agent ({LLM.label}).</div>")
 
 
 def c_bill(astates) -> None:
@@ -1227,7 +1319,7 @@ def c_solar(astates) -> None:
 
 def c_model(astates) -> None:
     with st.container(border=True):
-        card_head("Language model", "rules", astates, "small and large steps", key="lk_rules_model")
+        card_head("Language model", "router", astates, "small and large steps", key="lk_router_model")
         model_controls()
 
 
@@ -1474,47 +1566,48 @@ def c_check(astates) -> None:
 def manager_console() -> None:
     rows = _run_rows()
     astates = ARCH.element_states(rows, pending, ss.verify is not None, ss.hist is not None)
-    # the clickable diagram, small: a click opens that box in the Control room
+    # 1. what a manager came for: run the day, see the saving, decide
+    section("1", "Today's plan", "run the day, review the saving, decide")
+    c_left, c_right = st.columns([1, 1.25], gap="medium")
+    with c_left:
+        c_day(astates)
+        c_decision(astates)
+        c_workorder(astates)
+    with c_right:
+        c_saving(astates)
+        c_opt(astates)
+        c_check(astates)
+    # 2. how the agents got there: the design diagram, lit up from this run
+    section("2", "How the agents got there", "click any box for its data, its run log and its settings")
     with st.container(border=True):
-        c1, c2 = st.columns([4, 1.4], vertical_alignment="center")
-        c1.markdown("<div class='rh-ch'>Design diagram <span class='sub'>Click any box to open it with its data sources, run log and settings</span></div>",
-                    unsafe_allow_html=True)
-        c2.button("Open the full diagram ↗", key="c_hldfull", type="tertiary", on_click=goto, args=("Control room",))
-        html("<div class='rh-legend-hld'><span><i class='ran'></i>ran this run</span><span><i class='ask'></i>needs you</span>"
-             "<span><i></i>not run yet</span></div>")
+        html("<div class='rh-legend-hld'><span><span class='rh-tag ok'>Done</span> ran in this run</span>"
+             "<span><span class='rh-tag ask'>Your turn</span> waiting for you</span><span><span class='rh-tag'>No tag</span> not run yet</span>"
+             "<span class='rh-note'>Open the full diagram in the Control room.</span></div>")
         ss.setdefault("hld_nonce", 0)
-        picked = ARCH.component(astates, None, key=f"hld_console_{ss.hld_nonce}",
-                                css="#root{padding:6px;border:0} svg.dg{min-width:760px;max-height:430px}")
+        picked = ARCH.component(astates, None, key=f"hld_console_{ss.hld_nonce}", css="#root{padding:6px;border:0} svg.dg{min-width:900px}")
         if picked:
             ss.hld_nonce += 1
             goto("Control room", picked)
             st.rerun()
-    c_in, c_tel, c_out = st.columns([1, 1, 1], gap="medium")
+    # 3. the details: what went in, and what the agents did
+    section("3", "Inputs and details", "data, notes, prices and the model on one side; the agents' own steps on the other")
+    c_in, c_tel = st.columns([1, 1], gap="medium")
     with c_in:
-        section("1", "Inputs", "what goes in")
         c_meters(astates)
-        c_day(astates)
         c_notes(astates)
         c_bill(astates)
         c_solar(astates)
         c_model(astates)
     with c_tel:
-        section("2", "Telemetry", "what the agents are doing")
         c_run(astates)
         c_health(astates)
         c_forecast(astates)
-        c_opt(astates)
         c_guard(astates)
         c_stream(astates)
-    with c_out:
-        section("3", "Outputs", "what comes out")
-        c_decision(astates)
-        c_saving(astates)
-        c_workorder(astates)
-        c_check(astates)
 
 
 # ------------------------------------------------------------------ screens
+next_step(state if run else None, pending, ss.verify is not None)
 step_strip(state if run else None, pending, ss.verify is not None)
 if ss.get("view_nav") != ss.view:   # a link moved us: keep the screen switch in step (before it is drawn)
     ss.view_nav = ss.view
