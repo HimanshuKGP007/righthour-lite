@@ -326,7 +326,7 @@ def do_resume(value) -> None:
 html(f"""<div class='rh-top'><div class='rh-mark'>{ICONS['clock']}</div>
 <div><div class='name'>RightHour Lite</div>
 <div class='sub'>Tells a factory when to run its machines so the power bill goes down</div></div>
-<div class='site'><b>{SITE['name']}</b><br>{ss.tariff['name']}</div></div>""")
+<div class='site'><b>{escape(str(SITE['name']))}</b><br>{escape(str(ss.tariff['name']))}</div></div>""")
 
 
 # ------------------------------------------------------------------ the agentic pipeline
@@ -487,7 +487,7 @@ def step_rows(actions: set[str], rows: list[dict]) -> None:
     mine = [r for r in rows if r["action"] in actions]
     if not mine:
         return
-    body = "".join(f"<tr><td class='m'>{r['ts'][11:]}</td><td>{chip(r['tier'])}</td><td><b>{r['action']}</b></td><td>{r['reason']}</td><td>{r['mode']}</td></tr>" for r in mine)
+    body = "".join(f"<tr><td class='m'>{r['ts'][11:]}</td><td>{chip(r['tier'])}</td><td><b>{escape(str(r['action']))}</b></td><td>{escape(str(r['reason']))}</td><td>{escape(str(r['mode']))}</td></tr>" for r in mine)
     html(f"<table class='rh-log'><thead><tr><th>Time</th><th>Tier</th><th>Step</th><th>Why</th><th>Mode</th></tr></thead><tbody>{body}</tbody></table>")
 
 
@@ -759,7 +759,7 @@ def pane_opt(rows) -> None:
         def usual(m):
             b = m.get("baseline_start_h")
             return "" if b is None else "%02d:00" % int(b)
-        body = "".join(f"<tr><td>{m['name']}</td><td class='r'>{m['kw']:.0f}</td><td>{m['earliest_h']:02d}:00 to {int(m['latest_finish_h']):02d}:00</td>"
+        body = "".join(f"<tr><td>{escape(str(m['name']))}</td><td class='r'>{m['kw']:.0f}</td><td>{m['earliest_h']:02d}:00 to {int(m['latest_finish_h']):02d}:00</td>"
                        f"<td>{usual(m)}</td><td><b>{sched[m['id']]:02d}:00</b></td></tr>" for m in prob["shiftable"])
         html(f"<table class='rh-log'><thead><tr><th>Machine</th><th class='r'>kW</th><th>Allowed window</th><th>Usual start</th><th>Planned start</th></tr></thead><tbody>{body}</tbody></table>"
              f"<div class='rh-note' style='margin-top:6px'>{plan.get('solver', '')}. Cost for the day {rs(plan['total_rs'])}, peak {plan['peak_kva']:.0f} kVA. "
@@ -804,7 +804,7 @@ def pane_loop_no(rows) -> None:
     rej = [r for r in ss.audit.rows() if r["action"] == "reject"]
     html(f"<div class='rh-note'>{len(rej)} plan(s) rejected so far. A rejection is recorded with its reason. <b>Turning a rejection into a new rule is not built yet</b>: today a person adds the rule in the Factory systems box.</div>")
     if rej:
-        html("<table class='rh-log'><thead><tr><th>Time</th><th>Reason</th></tr></thead><tbody>" + "".join(f"<tr><td class='m'>{r['ts'][:16]}</td><td>{r['reason']}</td></tr>" for r in rej) + "</tbody></table>")
+        html("<table class='rh-log'><thead><tr><th>Time</th><th>Reason</th></tr></thead><tbody>" + "".join(f"<tr><td class='m'>{r['ts'][:16]}</td><td>{escape(str(r['reason']))}</td></tr>" for r in rej) + "</tbody></table>")
 
 
 def pane_loop_day(rows) -> None:
@@ -890,7 +890,7 @@ def read_back(state: dict) -> str:
         rows.append(f"<tr><td>{f['name']}</td><td>Fixed batch</td><td>{f['start_h']:02d}:00 to {f['end_h']:02d}:00</td><td class='r'>{f['kw']:.0f} kW</td></tr>")
     ex = state.get("extra") or []
     for e in (ex if isinstance(ex, list) else [ex]):
-        rows.append(f"<tr><td>{e['name']}</td><td>New order</td><td>{e['duration_h']:g} h inside {int(e['earliest_h']):02d}:00 to {int(e['latest_finish_h']):02d}:00</td><td class='r'>{e['kw']:.0f} kW</td></tr>")
+        rows.append(f"<tr><td>{escape(str(e['name']))}</td><td>New order</td><td>{e['duration_h']:g} h inside {int(e['earliest_h']):02d}:00 to {int(e['latest_finish_h']):02d}:00</td><td class='r'>{e['kw']:.0f} kW</td></tr>")
     if not rows:
         return ""
     return (f"<div class='rh-card'><h4>{ICONS['person']}How the agent read your notes</h4><table class='rh-log'><thead><tr><th>Name</th><th>Kind</th><th>Hours</th>"
@@ -1045,8 +1045,8 @@ def log_tab() -> None:
          + ", ".join(f"<span class='mono'>{m}</span> ${PRICES[m][0]} / ${PRICES[m][1]}" for m in MODELS[LLM.provider].values())
          + " per million tokens)</div></div>")
     body = "".join(
-        f"<tr><td class='m'>{r['ts'][11:]}</td><td>{chip(r['tier'])}</td><td>{r['agent']}</td><td><b>{r['action']}</b></td>"
-        f"<td>{r['reason']}</td><td>{r['mode']}</td><td class='r'>{'$%.4f' % r['cost_usd'] if r['cost_usd'] else ''}</td></tr>"
+        f"<tr><td class='m'>{r['ts'][11:]}</td><td>{chip(r['tier'])}</td><td>{escape(str(r['agent']))}</td><td><b>{escape(str(r['action']))}</b></td>"
+        f"<td>{escape(str(r['reason']))}</td><td>{escape(str(r['mode']))}</td><td class='r'>{'$%.4f' % r['cost_usd'] if r['cost_usd'] else ''}</td></tr>"
         for r in rows)
     html(f"<table class='rh-log'><thead><tr><th>Time</th><th>Tier</th><th>Agent</th><th>Step</th><th>Why this tier</th>"
          f"<th>Mode</th><th class='r'>Cost</th></tr></thead><tbody>{body}</tbody></table>")
@@ -1295,7 +1295,7 @@ def c_opt(astates) -> None:
             return
         sched = plan["schedule"]
         moved = [m for m in prob["shiftable"] if m.get("baseline_start_h") is not None and m["baseline_start_h"] != sched[m["id"]]]
-        body = "".join(f"<tr><td>{m['name']}</td><td class='r'>{m['kw']:.0f}</td><td class='m'>"
+        body = "".join(f"<tr><td>{escape(str(m['name']))}</td><td class='r'>{m['kw']:.0f}</td><td class='m'>"
                        f"{'new' if m.get('baseline_start_h') is None else '%02d:00' % m['baseline_start_h']}</td>"
                        f"<td class='m'><b style='color:{NAVY}'>{sched[m['id']]:02d}:00</b></td></tr>" for m in prob["shiftable"])
         html(f"<div class='rh-kv three'><div><b>{len(moved)}/{len(prob['shiftable'])}</b>machines moved</div>"
@@ -1326,7 +1326,7 @@ def c_stream(astates) -> None:
         if not rows:
             html("<div class='rh-note'>Steps appear here as the agents work.</div>")
             return
-        body = "".join(f"<tr title='{escape(r['reason'])}'><td class='m'>{r['ts'][11:19]}</td><td>{chip(r['tier'])}</td><td><b>{r['action']}</b></td>"
+        body = "".join(f"<tr title='{escape(r['reason'])}'><td class='m'>{r['ts'][11:19]}</td><td>{chip(r['tier'])}</td><td><b>{escape(str(r['action']))}</b></td>"
                        f"<td class='rh-note'>{SHORT.get(ARCH.ACTION_BOX.get(r['action'], 'orch'), '')}</td></tr>"
                        for r in reversed(rows[-8:]))
         html(f"<table class='rh-tiny'><thead><tr><th>Time</th><th>Tier</th><th>Step</th><th>Diagram box</th></tr></thead><tbody>{body}</tbody></table>"
