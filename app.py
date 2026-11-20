@@ -1453,7 +1453,7 @@ def learned_rules_editor() -> None:
     for i, lr in enumerate(lrs):
         c1, c2 = st.columns([5, 1], vertical_alignment="center")
         c1.markdown(f"<div class='rh-lockgrid' style='grid-template-columns:1fr;margin:0'><div>{ICONS['bookmark'] if 'bookmark' in ICONS else ICONS['lock']}"
-                    f"<span><b>{escape(A.learned_rule_text(lr, names))}</b><br><span class='rh-note'>{escape(lr.get('reason') or '')} · {lr.get('ts', '')}</span></span></div></div>",
+                    f"<span><b>{escape(A.learned_rule_text(lr, names))}</b><br><span class='rh-note'>{escape(str(lr.get('reason') or ''))} · {escape(str(lr.get('ts', '')))}</span></span></div></div>",
                     unsafe_allow_html=True)
         if c2.button("Remove", key=f"lr_rm_{i}", type="tertiary", icon=":material/delete:"):
             save_cfg(learned_rules=[x for j, x in enumerate(lrs) if j != i])
@@ -1825,7 +1825,20 @@ def settings_io() -> None:
         if up is not None and st.button("Load these settings", type="primary", icon=":material/upload:", key="set_load"):
             try:
                 d = json.loads(up.getvalue())
-                CFG.rows_to_machines(CFG.machines_to_rows(d["cfg"]["machines"]["shiftable"]))   # shape check
+                _, errs = CFG.rows_to_machines(CFG.machines_to_rows(d["cfg"]["machines"]["shiftable"]))   # shape check
+                if errs:
+                    raise ValueError(errs[0])
+                ids = {m["id"] for m in d["cfg"]["machines"]["shiftable"]}
+                clean = []
+                for lr in d["cfg"]["machines"].get("learned_rules", []):   # a learned rule must name a real machine and a known kind
+                    if not (isinstance(lr, dict) and lr.get("machine") in ids and lr.get("kind") in ("usual", "not_before", "finish_by")):
+                        raise ValueError("a learned rule names an unknown machine or kind")
+                    h = lr.get("hour")
+                    if h is not None and not (isinstance(h, (int, float)) and 0 <= h <= 24):
+                        raise ValueError("a learned rule has an hour outside 0 to 24")
+                    clean.append({"machine": lr["machine"], "kind": lr["kind"], "hour": int(h) if h is not None else None,
+                                  "reason": str(lr.get("reason", ""))[:300], "ts": str(lr.get("ts", ""))[:16]})
+                d["cfg"]["machines"]["learned_rules"] = clean
                 ss.cfg, ss.tariff = d["cfg"], d["cfg"]["tariff"]
                 ss.proc = {**PROCESS_DEFAULTS, **d.get("process", {})}
                 ss.price_rules = {**PRICE_RULES, **d.get("price_rules", {})}
