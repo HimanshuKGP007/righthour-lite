@@ -41,7 +41,7 @@ def tier_model(tier: str) -> str | None:
 
 
 SMALL_MODEL_MAX_INPUT = 100_000
-ESCALATE_AT = 3      # the attempt that goes to the large model: 3 = the small model gets two tries (set in the Control room)
+ESCALATE_AT = 3      # default: the third attempt goes to the large model. Each run passes its own value (Control room setting).
 
 TASK_DEFAULT = {
     "validate_data": "T0", "forecast_load": "T0", "solar_forecast": "T0", "tariff_lookup": "T0",
@@ -62,15 +62,16 @@ class Route:
     reason: str
 
 
-def route(task: str, attempt: int = 1, input_tokens: int = 0, novel: bool = False, infeasible: bool = False) -> Route:
+def route(task: str, attempt: int = 1, input_tokens: int = 0, novel: bool = False, infeasible: bool = False,
+          escalate_at: int = ESCALATE_AT) -> Route:
     tier = TASK_DEFAULT.get(task, "T1")
     reason = {"constraint_parse": "short, formulaic note to JSON: small model", "explain": "templated daily explanation: small model",
               "orchestrate": "routine run: small model picks the next tool", "replan": "routine re-plan: small model",
               "answer_question": "free-form question: large model"}.get(task, f"default tier for '{task}'")
     if tier == "T0":
         return Route(task, "T0", None, "deterministic code or ML; no language model")
-    if tier == "T1" and attempt >= ESCALATE_AT:
-        n = ESCALATE_AT - 1
+    if tier == "T1" and attempt >= escalate_at:
+        n = escalate_at - 1
         tier, reason = "T2", f"small-model output failed validation {'once' if n == 1 else ('twice' if n == 2 else f'{n} times')}"
     elif tier == "T1" and infeasible:
         tier, reason = "T2", "optimiser found no feasible plan; a soft rule must be chosen"

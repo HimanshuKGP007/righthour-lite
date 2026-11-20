@@ -20,7 +20,6 @@ import streamlit as st
 
 from righthour import architecture as ARCH
 from righthour import ask as ASK
-from righthour import router as ROUTER
 from righthour import config as CFG
 from righthour import data as D
 from righthour import live as LIVE
@@ -391,7 +390,6 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
         try:
             ctx = Context(SITE, ss.tariff, MACH, ss.hist, goal=goal or "Cut tomorrow's bill.", cloudy=WEATHER[weather], plan_date=plan_date,
                           notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process={**ss.proc, "pins": dict(ss.pins)})
-            ROUTER.ESCALATE_AT = int(ss.proc.get("small_tries", 2)) + 1
             graph, cfg, state, pending = start(ctx)
             ss.run = {"ctx": ctx, "graph": graph, "cfg": cfg, "state": state, "pending": pending, "cfg_version": ss.cfg_version,
                       "proc": dict(ss.proc), "price_rules": dict(ss.get("price_rules", PRICE_RULES))}

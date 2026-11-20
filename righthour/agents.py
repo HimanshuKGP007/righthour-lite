@@ -186,7 +186,7 @@ def parse_note(ctx: Context, note: str, defaults: dict, steps: list) -> dict:
     """Operator note -> constraint JSON on the small model. Retry once with the error, then escalate to T2."""
     last_err = ""
     for attempt in (1, 2, 3):
-        r = route("constraint_parse", attempt=attempt)
+        r = route("constraint_parse", attempt=attempt, escalate_at=_esc(ctx))
         if ctx.llm.live:
             prompt = ("Turn this operator note into JSON. Keys: kw, and either start_h and end_h for a fixed batch, or "
                       "duration_h, earliest_h, latest_finish_h for a flexible job (24-hour numbers). JSON only.\n"
@@ -257,6 +257,7 @@ def build_problem(ctx: Context, st: dict, relax: dict | None = None, drop_rule: 
         for m in shiftable:
             if m["id"] == target:
                 m[relax["field"]] = relax["value"]
+    apply_learned_rules(ctx.machines_cfg, shiftable)   # every "no" that became a rule
     for m in shiftable:                         # machines the manager pinned: they run at exactly that hour
         h = ((ctx.process or {}).get("pins") or {}).get(m["id"])
         if h is not None:
@@ -309,6 +310,11 @@ def relaxation_options(ctx: Context, st: dict | None = None) -> list[dict]:
             opts.append({"id": r["id"], "text": r.get("relax_text") or r["text"], "kind": "rule",
                          "side_cost_note": r.get("side_cost_note", "")})
     return opts
+
+
+def _esc(ctx) -> int:
+    """The attempt that goes to the large model, for this run only (never a shared global)."""
+    return int(((ctx.process or {}).get("small_tries") or 2)) + 1
 
 
 # How each box of the diagram works. The Control room changes these per session; each run records the values it used.
@@ -488,7 +494,7 @@ def explain(ctx: Context, st: dict) -> str:
     r = route("explain")
     if ctx.llm.live:
         for attempt in (1, 2, 3):
-            rr = route("explain", attempt=attempt)
+            rr = route("explain", attempt=attempt, escalate_at=_esc(ctx))
             try:
                 out, tin, tout = ctx.llm.complete(rr.model, "Rewrite this plan for a plant manager in two or three plain "
                                                   "sentences. Use only the numbers given; add none.", text, 300)
@@ -570,3 +576,56 @@ def verify_and_learn(ctx: Context, run: dict, executed: dict[str, int], actual: 
                   detail={"old_bias": round(ctx.bias, 4), "new_bias": round(new_bias, 4),
                           "realisation": round(res["realisation"], 3) if res["realisation"] else None})
     return res
+
+
+# ------------------------------------------------------------------ the four moments with the manager (deck, slide 7)
+def machine_savings(problem: dict, baseline: dict, plan: dict) -> dict[str, float]:
+    """What each moved machine saves on its own: the usual day with only that machine moved, against the usual day."""
+    base_ev = evaluate(problem, baseline)["total_rs"]
+    out = {}
+    for m in problem["shiftable"]:
+        b = m.get("baseline_start_h")
+        if b is None or plan.get(m["id"]) in (None, b):
+            continue
+        out[m["id"]] = base_ev - evaluate(problem, {**baseline, m["id"]: plan[m["id"]]})["total_rs"]
+    return out
+
+
+def why_moved(problem: dict, m: dict, start: int) -> str:
+    """Plain-code answer to "why move this machine there?". Every number comes from the tariff and the machine's window."""
+    from .tariff import slot_rates
+    r = slot_rates(problem["tariff"])
+    avg = lambda h: sum(r[int(k)] for k in range(int(h * SLOTS_PER_HOUR), int((h + m["duration_h"]) * SLOTS_PER_HOUR))) / (m["duration_h"] * SLOTS_PER_HOUR)  # noqa: E731
+    b = m.get("baseline_start_h")
+    if b is None:
+        return f"{m['name']} is new today; {hhmm(start)} is the cheapest time inside its window ({hhmm(m['earliest_h'])} to {hhmm(m['latest_finish_h'])})."
+    old, new = avg(b), avg(start)
+    if new >= old:
+        return f"{m['name']} stays close to its usual time: no cheaper hour fits its rules."
+    cut = (1 - new / old) * 100
+    frac = {33: "a third", 25: "a quarter", 50: "half"}.get(int(round(cut / 1)) if cut in (25, 33, 50) else 0, f"{cut:.0f}%")
+    if 30 <= cut <= 36:
+        frac = "a third"
+    ok = start + m["duration_h"] <= m["latest_finish_h"]
+    return (f"Power costs {frac} less then: ₹{new:.2f} against ₹{old:.2f} per unit at {hhmm(b)}. "
+            + ("No deadline moves." if ok else "It still finishes inside its window."))
+
+
+def apply_learned_rules(machines_cfg: dict, shiftable: list[dict]) -> None:
+    """Every "no" the manager turned into a rule narrows that machine's window from then on."""
+    for lr in machines_cfg.get("learned_rules", []):
+        for m in shiftable:
+            if m["id"] != lr["machine"]:
+                continue
+            if lr["kind"] == "usual" and m.get("baseline_start_h") is not None:
+                m["earliest_h"], m["latest_finish_h"] = m["baseline_start_h"], m["baseline_start_h"] + m["duration_h"]
+            elif lr["kind"] == "not_before":
+                m["earliest_h"] = max(m["earliest_h"], int(lr["hour"]))
+            elif lr["kind"] == "finish_by":
+                m["latest_finish_h"] = min(m["latest_finish_h"], int(lr["hour"]))
+
+
+def learned_rule_text(lr: dict, names: dict) -> str:
+    n = names.get(lr["machine"], lr["machine"])
+    return {"usual": f"{n} stays at its usual time", "not_before": f"{n} never starts before {hhmm(lr.get('hour', 0))}",
+            "finish_by": f"{n} always finishes by {hhmm(lr.get('hour', 24))}"}[lr["kind"]]
