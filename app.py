@@ -23,6 +23,7 @@ from righthour import ask as ASK
 from righthour import config as CFG
 from righthour import data as D
 from righthour import live as LIVE
+from righthour import agents as A
 from righthour.agents import PROCESS_DEFAULTS, Context, lakh, parse_tariff, rs, verify_and_learn
 from righthour.audit import AuditLog
 from righthour.graph import resume, start
@@ -382,6 +383,57 @@ def notes_for_run() -> list[dict]:
     return out
 
 
+# ------------------------------------------------------------------ the conversation with the agent (deck: four moments with the manager)
+ss.setdefault("feed", [])          # [{"who": "agent"|"manager", "text": ..., "ts": ...}] for the day being planned
+ss.setdefault("prev_plan", None)   # the last plan, so a new one can say what changed and why
+
+
+def say(who: str, text: str) -> None:
+    ss.feed = ss.feed + [{"who": who, "text": text, "ts": f"{dt.datetime.now():%H:%M}"}]
+
+
+def _moves(st_: dict) -> list[tuple[dict, int]]:
+    sched = (st_.get("plan") or {}).get("schedule") or {}
+    return [(m, sched[m["id"]]) for m in (st_.get("problem") or {}).get("shiftable", [])
+            if m["id"] in sched and m.get("baseline_start_h") is not None and sched[m["id"]] != m["baseline_start_h"]]
+
+
+def _ampm(h: int) -> str:
+    h = int(h) % 24
+    return "midnight" if h == 0 else ("noon" if h == 12 else f"{h % 12} {'am' if h < 12 else 'pm'}")
+
+
+def on_new_plan(st_: dict, pend: dict | None) -> None:
+    """After every plan, the agent says what it did: a first plan, a re-plan question, or what changed and why."""
+    day = st_.get("forecast", {}).get("date")
+    prev = ss.prev_plan if ss.prev_plan and ss.prev_plan.get("date") == day else None
+    if ss.prev_plan and ss.prev_plan.get("date") != day:
+        ss.feed = []
+    cur = {"date": day, "weather": ss.w_weather, "pins": dict(ss.pins), "proc": dict(ss.proc), "cfg": ss.cfg_version,
+           "rules": len(ss.cfg["machines"].get("learned_rules", [])), "schedule": dict((st_.get("plan") or {}).get("schedule") or {})}
+    sav = st_.get("saving_rs")
+    if pend and pend.get("type") == "choose_relaxation":
+        feas = [o for o in pend["options"] if o["feasible"]]
+        rec = next((o for o in feas if o["id"] == pend.get("recommended")), None)
+        say("agent", f"The work won't fit the cheap hours with every rule. " + (f"{rec['text']}?" if rec else "No flexible rule makes it fit."))
+    elif st_.get("status") == "fallback":
+        say("agent", f"I kept the usual schedule. {st_.get('note', '')}")
+    else:
+        mv = _moves(st_)
+        moved = "; ".join(f"{m['name']} to {_ampm(h)}" for m, h in mv) or "nothing"
+        save = f"saves {rs(round(sav, -2))}" if sav else "no saving to claim"
+        if not prev:
+            say("agent", f"Plan ready. Move {len(mv)} machine{'s' if len(mv) != 1 else ''}. About {rs(round(sav or 0, -2))} saved.")
+        elif prev["schedule"] != cur["schedule"] or prev["weather"] != cur["weather"]:
+            cause = ("Clouds tomorrow." if cur["weather"] == "Cloudy day" else "Clear sky tomorrow." if cur["weather"] == "Clear sky" else "New weather forecast.") \
+                if prev["weather"] != cur["weather"] else ("Your change is in." if prev["pins"] != cur["pins"] else
+                                                           "Your rule is in." if prev["rules"] != cur["rules"] else
+                                                           "New rules and limits." if prev["proc"] != cur["proc"] else
+                                                           "New plant settings." if prev["cfg"] != cur["cfg"] else "Re-planned.")
+            say("agent", f"{cause} I moved {moved}. Still {save}." if mv else f"{cause} Everything stays at its usual time.")
+    ss.prev_plan = cur
+
+
 # the first visit runs the plan on its own, so the whole flow is visible without a single click
 run_error = None
 if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and plan_date is not None:
@@ -393,6 +445,7 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
             graph, cfg, state, pending = start(ctx)
             ss.run = {"ctx": ctx, "graph": graph, "cfg": cfg, "state": state, "pending": pending, "cfg_version": ss.cfg_version,
                       "proc": dict(ss.proc), "price_rules": dict(ss.get("price_rules", PRICE_RULES))}
+            on_new_plan(state, pending)
             ss.verify = None if not (ss.approved and ss.verify and ss.verify.get("_run") == ctx.run_id) else ss.verify
         except Exception as e:  # noqa: BLE001
             ss.run, run_error = None, f"No plan could be made: {e}"
@@ -402,6 +455,22 @@ def do_resume(value) -> None:
     r = ss.run
     with st.spinner("Re-planning..."):
         r["state"], r["pending"] = resume(r["graph"], r["cfg"], value)
+    if isinstance(value, str):                       # the manager picked a rule to relax
+        opt = next((o for o in (r["state"].get("options") or []) if o["id"] == value), None)
+        say("manager", f"Yes. {opt['text'] if opt else 'Relax that rule'}.")
+        sav = r["state"].get("saving_rs")
+        say("agent", f"Done. {('Saves about ' + rs(round(sav, -2)) + ' today.') if sav else 'The order fits now.'}")
+    elif value.get("action") == "approve":
+        say("manager", "Approve." + (f" {value.get('note')}" if value.get("note") else ""))
+        say("agent", "Approved. The work order is ready for the shift lead.")
+    elif value.get("action") == "reject":
+        say("manager", f"No. {value.get('reason', '')}")
+        say("agent", "Understood. The usual schedule stays. Should I remember this as a rule?")
+        ss.ask_rule = True
+    elif value.get("action") == "edit":
+        ok = r["state"].get("status") != "edit_blocked"
+        say("manager", "Use my edited times.")
+        say("agent", "Checked and approved." if ok else "That edit breaks a hard rule: " + "; ".join(r["state"]["edit_result"]["failed"]))
     if r["state"].get("status") == "work_order_issued":
         ss.approved = (r["ctx"], r["state"])
         ss.verify = None
@@ -437,7 +506,10 @@ SETTINGS = [("Small AI model", "model llm small t1 groq claude grok key provider
             ("Days of history needed", "history days minimum data", "check"),
             ("Price-check limits", "price rule floor peak solar discount regulator 8a", "bill"),
             ("Approve, reject or change the plan", "approve reject edit change keep note decision", "manager"),
-            ("Work order", "work order download csv", "runs"),
+            ("Work order", "work order download csv send shift lead", "runs"),
+            ("Remove names before AI", "privacy redact names data ai", "router"),
+            ("Factory templates", "template foundry plastics textiles cold storage machines", "factory"),
+            ("Rules learned from a no", "learned rule memory reject no remember", "memory"),
             ("Next-day check", "verify real saving next day check learn", "loop_day"),
             ("Download the audit trail", "audit record download csv history", "store")]
 
@@ -642,7 +714,7 @@ def save_cfg(**updates) -> None:
     """Write plant settings (site, tariff, machines, rules) to plant_config.json and mark any current plan as out of date."""
     cfg = ss.cfg
     new = {"site": updates.get("site", cfg["site"]), "tariff": updates.get("tariff", cfg["tariff"]),
-           "machines": {**cfg["machines"], **{k: updates[k] for k in ("shiftable", "rules") if k in updates}}}
+           "machines": {**cfg["machines"], **{k: updates[k] for k in ("shiftable", "rules", "learned_rules") if k in updates}}}
     ss.cfg = new
     CFG.save(new)
     ss.tariff, ss.cfg_version = new["tariff"], ss.cfg_version + 1
@@ -721,6 +793,7 @@ def notes_editor() -> None:
 
 
 def pane_machines() -> None:
+    template_picker()
     cfg = ss.cfg
     st.markdown("**Machines that can move**")
     html("<div class='rh-note' style='margin-bottom:6px'>Each machine runs once a day, anywhere between its start and finish times.</div>")
@@ -1039,6 +1112,7 @@ LIMITS = [
     ("loop_day", "learn_outlier", "Ignore days off by more than (%)", "pct", (10, 100, 5), "Such a day is treated as odd and not learned from."),
     ("opt", "time_limit_s", "Time the solver may take (seconds)", "slider", (5, 120, 5, "%d"), "This plant solves in under a second."),
     ("router", "small_tries", "Small-model tries before the large model", "slider", (1, 3, 1, "%d"), "After this many failed checks, the large model takes over."),
+    ("router", "redact_names", "Remove names before any AI sees the data", "toggle", None, "The plant's name is replaced before text goes to an AI model."),
     ("rules", "notes_on", "Read the day's production notes", "toggle", None, "Off: batches and orders in notes are not planned."),
     ("weather", "solar_on", "Count rooftop solar", "toggle", None, "Off: the plan counts no solar power."),
     ("meters", "live_hold_days", "Days held back in live mode", "slider", (3, 14, 1, "%d"), "They arrive one by one, like a real meter."),
@@ -1162,7 +1236,7 @@ ACTION_WORDS = {"validate_data": "Checked the meter readings", "forecast_load": 
                 "relax_rule": "Manager chose a rule to relax", "work_order": "Issued the work order", "reject": "Manager rejected the plan",
                 "verify_savings": "Checked the real saving", "learn": "Learned from the day", "setup_saved": "Settings saved",
                 "data_loaded": "Meter data loaded", "approve": "Manager approved the plan", "plan_update": "Manager changed the plan",
-                "plan_edit": "Manager approved an edited plan", "safe_fallback": "Kept the usual schedule", "answer_question": "Answered a question"}
+                "plan_edit": "Manager approved an edited plan", "learn_rule": "Saved a “no” as a rule", "work_order_sent": "Work order sent to the shift lead", "safe_fallback": "Kept the usual schedule", "answer_question": "Answered a question"}
 TIER_WORDS = {"T0": "Plain code", "T1": "Small AI model", "T2": "Large AI model", "human": "A person"}
 
 
@@ -1368,6 +1442,23 @@ def ctl_runs() -> None:
                        key="wo_pane", icon=":material/download:")
 
 
+def learned_rules_editor() -> None:
+    """The rules the agent learned from the manager's "no" answers. Each one can be removed."""
+    lrs = ss.cfg["machines"].get("learned_rules", [])
+    names = {m["id"]: m["name"] for m in MACH["shiftable"]}
+    html("<div class='rh-sub'>Rules learned from your “no”</div>")
+    if not lrs:
+        html("<div class='rh-note'>None yet. Reject a plan on Today, and the agent asks whether to remember it.</div>")
+        return
+    for i, lr in enumerate(lrs):
+        c1, c2 = st.columns([5, 1], vertical_alignment="center")
+        c1.markdown(f"<div class='rh-lockgrid' style='grid-template-columns:1fr;margin:0'><div>{ICONS['bookmark'] if 'bookmark' in ICONS else ICONS['lock']}"
+                    f"<span><b>{escape(A.learned_rule_text(lr, names))}</b><br><span class='rh-note'>{escape(lr.get('reason') or '')} · {lr.get('ts', '')}</span></span></div></div>",
+                    unsafe_allow_html=True)
+        if c2.button("Remove", key=f"lr_rm_{i}", type="tertiary", icon=":material/delete:"):
+            save_cfg(learned_rules=[x for j, x in enumerate(lrs) if j != i])
+
+
 def ctl_none(text: str):
     return lambda: html(f"<div class='rh-note'>{text}</div>")
 
@@ -1377,9 +1468,8 @@ CONTROLS = {"meters": lambda: (meter_controls("cr"), box_limits("meters", cols=1
             "weather": lambda: (st.selectbox("Solar forecast", list(WEATHER), key="w_weather", disabled=not ss.proc["solar_on"]), pane_weather([])),
             "collect": ctl_day, "orch": ctl_day, "check": lambda: box_limits("check"), "store": ctl_store,
             "forecast": lambda: (box_limits("forecast"), ctl_bias()), "opt": lambda: box_limits("opt", cols=1),
-            "guard": lambda: (box_limits("guard"), ctl_locked()), "router": lambda: (box_limits("router", cols=1), pane_router([])), "memory": lambda: pane_memory([]), "manager": ctl_manager, "runs": ctl_runs,
-            "loop_no": ctl_none("No settings yet. Each rejection is saved with its reason. Turning a reason into a new rule is not built yet: "
-                                "for now, add the rule in <b>Factory systems</b>."),
+            "guard": lambda: (box_limits("guard"), ctl_locked()), "router": lambda: (box_limits("router", cols=1), pane_router([])), "manager": ctl_manager, "runs": ctl_runs,
+            "loop_no": lambda: learned_rules_editor(), "memory": lambda: (pane_memory([]), learned_rules_editor()),
             "loop_day": lambda: (box_limits("loop_day", cols=3), pane_loop_day([]))}
 PANES = CONTROLS
 
@@ -1479,7 +1569,7 @@ def approval_controls(scope: str) -> None:
     if b2.button("Reject", icon=":material/close:", width="stretch", key=f"reject_{scope}"):
         do_resume({"action": "reject", "reason": note.strip() or "no reason given"})
         st.rerun()
-    with st.expander("Change the plan", icon=":material/edit_calendar:"):
+    with st.expander("Change the plan", icon=":material/edit_calendar:", expanded=bool(ss.get("open_change"))):
         html("<div class='rh-note'>Set a start time, and tick <b>Keep</b> for any machine that must not change. "
              "<b>Update plan</b> plans again around what you kept. Your note and changes are saved in the audit trail.</div>")
         sched = state["plan"]["schedule"]
@@ -1668,6 +1758,201 @@ def _run_rows() -> list[dict]:
     return ss.audit.rows(ctx.run_id) if ctx else []
 
 
+# ---- the deck's business pieces: a free bill check, the shared-savings split, factory templates, settings to keep
+def bill_check() -> None:
+    """Free bill check (deck slide 10): a savings estimate from one power bill. Rates come from the active tariff."""
+    r = {b["type"]: b["rate"] for b in ss.tariff["slots"]}
+    pk, so = r.get("peak", 10.55), r.get("solar", 7.17)
+    c1, c2, c3 = st.columns(3)
+    bill_m = c1.number_input("Monthly power bill (₹)", 50_000, 50_000_000, 833_000, 10_000, key="bc_bill")
+    peak_sh = c2.slider("Share used in peak hours (%)", 5, 60, 30, key="bc_peak")
+    move_sh = c3.slider("Share of that work that can move (%)", 5, 80, 30, key="bc_move")
+    year = bill_m * 12 * peak_sh / 100 * move_sh / 100 * (1 - so / pk)
+    pct = year / (bill_m * 12) * 100
+    fee = 12_500 * 12
+    keep_sh = max(year - fee, 0)
+    html(f"<div class='rh-kpis'><div><b class='g'>{lakh(year)}</b><span>estimated saving a year</span></div>"
+         f"<div><b>{pct:.1f}%</b><span>of the yearly bill</span></div><div><b>{rs(year / 300)}</b><span>a working day</span></div></div>"
+         f"<div class='rh-split'><i style='width:{(keep_sh / year * 100) if year else 0:.1f}%'><span>Factory keeps {lakh(keep_sh)}</span></i>"
+         f"<b><span>Starter plan ₹12,500 a month</span></b></div>"
+         f"<div class='rh-note'>Moving work from peak (₹{pk:.2f}) to solar hours (₹{so:.2f}). Or pay 20–30% of proven savings, nothing upfront. "
+         f"An estimate, not a promise: the first plans show the real number.</div>")
+
+
+def savings_split() -> None:
+    """Who keeps what from the checked savings (deck slide 10): 20–30% shared-savings fee."""
+    ver = [json.loads(r["detail"]) for r in ss.audit.rows() if r["action"] == "verify_savings"]
+    tot = sum(v.get("verified_saving_rs") or 0 for v in ver)
+    if not ver or tot <= 0:
+        return
+    with st.container(border=True):
+        card_title("rupee", "Who keeps the saving", f"{len(ver)} checked day(s), {rs(tot)} verified on the meters")
+        html(f"<div class='rh-split'><i style='width:75%'><span>Factory keeps {rs(tot * .75)}</span></i><b><span>RightHour 25%: {rs(tot * .25)}</span></b></div>"
+             "<div class='rh-note'>Shared-savings option: the fee is 20–30% of savings proven on the meters, against a baseline agreed before the pilot.</div>")
+
+
+TEMPLATES = {
+    "Foundry": [("Sand mixer", 75, 3, 6, 22, 17), ("Shot blasting", 90, 3, 6, 23, 18), ("Air compressors", 110, 4, 6, 23, 17),
+                ("Fettling grinders", 45, 4, 7, 22, 16), ("Core baking oven", 60, 3, 0, 24, 19)],
+    "Plastics moulding": [("Granule dryer", 40, 4, 0, 18, 14), ("Chiller", 90, 5, 6, 24, 17), ("Regrind mill", 55, 2, 8, 22, 18),
+                          ("Air compressors", 75, 4, 6, 23, 17)],
+    "Textiles": [("Humidification plant", 70, 5, 6, 24, 17), ("Air compressors", 90, 4, 6, 23, 18), ("Dyeing boiler feed pumps", 45, 3, 4, 20, 17)],
+    "Cold storage": [("Blast freezer", 150, 4, 0, 24, 18), ("Compressor bank B", 110, 5, 0, 24, 17), ("Defrost cycle", 40, 1, 0, 24, 19)],
+}
+
+
+def template_picker() -> None:
+    with st.expander("Start from a factory template", icon=":material/factory:"):
+        html("<div class='rh-note'>Ready-made machine lists by type of factory. They replace the machines below; edit them after.</div>")
+        c1, c2 = st.columns([2, 1], vertical_alignment="bottom")
+        t = c1.selectbox("Type of factory", list(TEMPLATES), key="tpl_pick")
+        if c2.button("Use this template", key="tpl_go", width="stretch"):
+            rows = [{"Machine": n, "kW": kw, "Hours": h, "Earliest start": e, "Latest finish": l, "Usual start": u} for n, kw, h, e, l, u in TEMPLATES[t]]
+            machines, errs = CFG.rows_to_machines(rows)
+            if not errs:
+                save_cfg(shiftable=machines, rules=[r for r in ss.cfg["machines"]["rules"] if r["type"] == "contract_demand"], learned_rules=[])
+
+
+def settings_io() -> None:
+    """Settings live in this browser session and in a file on the server, which a restart clears. Download them to keep them."""
+    with st.container(border=True):
+        card_title("database", "Keep your settings", "The hosted app forgets them when it restarts. Download them, and load them back any time.")
+        blob = json.dumps({"cfg": ss.cfg, "process": {k: v for k, v in ss.proc.items()}, "price_rules": ss.get("price_rules", PRICE_RULES),
+                           "notes": ss.notes_rows}, default=str, indent=1).encode()
+        c1, c2 = st.columns(2)
+        c1.download_button("Download my settings", blob, "righthour_settings.json", "application/json", icon=":material/download:", width="stretch")
+        up = c2.file_uploader("Load settings", type=["json"], key="set_up", label_visibility="collapsed")
+        if up is not None and st.button("Load these settings", type="primary", icon=":material/upload:", key="set_load"):
+            try:
+                d = json.loads(up.getvalue())
+                CFG.rows_to_machines(CFG.machines_to_rows(d["cfg"]["machines"]["shiftable"]))   # shape check
+                ss.cfg, ss.tariff = d["cfg"], d["cfg"]["tariff"]
+                ss.proc = {**PROCESS_DEFAULTS, **d.get("process", {})}
+                ss.price_rules = {**PRICE_RULES, **d.get("price_rules", {})}
+                ss.notes_rows, ss.notes_ver = d.get("notes", ss.notes_rows), ss.notes_ver + 1
+                CFG.save(ss.cfg)
+                ss.cfg_version += 1
+                ss.trigger_plan = True
+                st.rerun()
+            except Exception as e:  # noqa: BLE001
+                st.error(f"That file is not a RightHour settings file ({e}).")
+
+
+# ---- the morning brief and the conversation (deck slides 4 and 7)
+def _band_strip() -> str:
+    return "".join(f"<span style='width:{(b['end_h'] - b['start_h']) / 24 * 100:.2f}%;background:{BAND[b['type']]}'></span>" for b in ss.tariff["slots"])
+
+
+def morning_brief() -> None:
+    """What the manager sees each morning: the moves, what each saves, the checks, and four buttons."""
+    if not run or not state.get("plan") or state.get("status") in ("fallback",) or (pending and pending.get("type") == "choose_relaxation"):
+        return
+    mv = _moves(state)
+    per = A.machine_savings(state["problem"], state["baseline"]["schedule"], state["plan"]["schedule"]) if state["baseline"].get("feasible") else {}
+    sav = state.get("saving_rs")
+    checks = (state.get("policy") or {}).get("checks", [])
+    cd_ok = all(c["ok"] for c in checks if c["rule"].startswith(("Max demand",)))
+    win_ok = all(c["ok"] for c in checks if " inside " in c["rule"])
+    with st.container(border=True, key="brief"):
+        html(f"<div class='rh-brief-h'><span>{LOGO}RightHour · plan for {state['forecast']['weekday']}</span><span class='t'>{_ampm(ss.w_plan_at.hour) if hasattr(ss.w_plan_at, 'hour') else ''}</span></div>"
+             f"<div class='rh-brief-t'>Move {len(mv)} machine{'s' if len(mv) != 1 else ''}. Save about <b>{rs(round(sav or 0, -2))}</b>.</div>")
+        rows = ""
+        for m, h in mv:
+            b = m["baseline_start_h"]
+            x0, x1 = b / 24 * 100, h / 24 * 100
+            w = m["duration_h"] / 24 * 100
+            rows += (f"<div class='rh-mv'><div class='n'>{escape(m['name'])}</div>"
+                     f"<div class='tl'><div class='bands'>{_band_strip()}</div><i class='was' style='left:{x0:.1f}%;width:{w:.1f}%'></i>"
+                     f"<i class='now' style='left:{x1:.1f}%;width:{w:.1f}%'></i></div>"
+                     f"<div class='a'>{_ampm(b)} → {_ampm(h)}</div><div class='s'>{rs(per.get(m['id'], 0))}</div></div>")
+        for f in state.get("fixed", []):
+            rows += (f"<div class='rh-mv kept'><div class='n'>{escape(f['name'])}</div><div class='tl'><div class='bands'>{_band_strip()}</div>"
+                     f"<i class='fix' style='left:{f['start_h'] / 24 * 100:.1f}%;width:{(f['end_h'] - f['start_h']) / 24 * 100:.1f}%'></i></div>"
+                     f"<div class='a'>stays: mid-batch rule</div><div class='s'>kept</div></div>")
+        html(f"<div class='rh-mvs'><div class='rh-axis'><span></span><span class='ticks'><em>0h</em><em>6h</em><em>12h</em><em>18h</em><em>24h</em></span></div>{rows}</div>")
+        ver = [json.loads(r["detail"]) for r in ss.audit.rows() if r["action"] == "verify_savings"]
+        html("<div class='rh-ticks'>"
+             f"<span class='{'ok' if win_ok else 'bad'}'>{ICONS['check' if win_ok else 'alert']}All orders on time</span>"
+             f"<span class='{'ok' if cd_ok else 'bad'}'>{ICONS['check' if cd_ok else 'alert']}Under contract demand</span></div>"
+             + (f"<div class='rh-note'>Last checked plan: <b>{rs(ver[-1].get('verified_saving_rs') or 0)}</b> saved, checked on the meters.</div>" if ver else ""))
+        if pending and pending.get("type") == "approval":
+            b1, b2, b3, b4 = st.columns(4)
+            if b1.button("Approve", type="primary", icon=":material/check:", width="stretch", key="br_ok"):
+                ss.audit.log(ctx.run_id, "Plant manager", "approve", tier="human", mode="human", reason="approved from the morning brief")
+                do_resume({"action": "approve"})
+                st.rerun()
+            if b2.button("Edit", icon=":material/edit_calendar:", width="stretch", key="br_edit", help="Change start times or keep machines where they are."):
+                ss.open_change = True
+                st.rerun()
+            if b3.button("Reject", icon=":material/close:", width="stretch", key="br_no"):
+                ss.rejecting = True
+                st.rerun()
+            if b4.button("Ask why", icon=":material/help:", width="stretch", key="br_why"):
+                for m, h in mv:
+                    say("manager", f"Why move the {m['name'].split(' (')[0].lower()} to {_ampm(h)}?")
+                    say("agent", A.why_moved(state["problem"], m, h))
+                st.rerun()
+
+
+def conversation() -> None:
+    """The four moments with the manager, as they happen: re-plans, explains, remembers, reacts."""
+    with st.container(border=True, key="convo"):
+        card_title("forum", "Talk to the agent", "Every message is saved in the audit trail")
+        bubbles = "".join(f"<div class='b {m['who']}'><b>{'Agent' if m['who'] == 'agent' else 'You'}:</b> {escape(m['text'])}<i>{m['ts']}</i></div>"
+                          for m in reversed(ss.feed[-30:])) or "<div class='rh-note'>The agent's messages appear here.</div>"
+        html(f"<div class='rh-chat'>{bubbles}</div>")
+        # RE-PLANS: the agent asks which rule may flex
+        if pending and pending.get("type") == "choose_relaxation":
+            for o in [o for o in pending["options"] if o["feasible"]][:3]:
+                if st.button(f"Yes: {o['text']}", key=f"cv_relax_{o['id']}", width="stretch",
+                             type="primary" if o["id"] == pending.get("recommended") else "secondary"):
+                    do_resume(o["id"])
+                    st.rerun()
+        # REJECT: the manager says why
+        if ss.get("rejecting") and pending and pending.get("type") == "approval":
+            why = st.text_input("Tell the agent why", key="cv_why", placeholder="e.g. The press line needs the night crew.")
+            c1, c2 = st.columns(2)
+            if c1.button("Reject the plan", type="primary", key="cv_rej", width="stretch", disabled=not why.strip()):
+                ss.rejecting = False
+                do_resume({"action": "reject", "reason": why.strip()})
+                ss.rule_hint = why.strip()
+                st.rerun()
+            if c2.button("Cancel", key="cv_rej_x", width="stretch"):
+                ss.rejecting = False
+                st.rerun()
+        # REMEMBERS: every "no" can become a rule
+        if ss.get("ask_rule"):
+            ms = MACH["shiftable"]
+            c1, c2, c3 = st.columns([1.4, 1.4, 0.8])
+            mid = c1.selectbox("Machine", [m["id"] for m in ms], format_func={m["id"]: m["name"] for m in ms}.get, key="cv_rm")
+            kind = c2.selectbox("Rule", ["usual", "not_before", "finish_by"], key="cv_rk",
+                                format_func={"usual": "Keep at its usual time", "not_before": "Never start before", "finish_by": "Always finish by"}.get)
+            hour = c3.selectbox("Time", HOURS, index=18, key="cv_rh", disabled=kind == "usual")
+            c1, c2 = st.columns(2)
+            if c1.button("Save as a rule", type="primary", icon=":material/bookmark_add:", key="cv_rs", width="stretch"):
+                lr = {"machine": mid, "kind": kind, "hour": from_t(hour), "reason": ss.get("rule_hint", ""), "ts": f"{dt.datetime.now():%Y-%m-%d %H:%M}"}
+                names = {m["id"]: m["name"] for m in ms}
+                ss.ask_rule = False
+                say("agent", f"Saved as a rule. {A.learned_rule_text(lr, names)}.")
+                ss.audit.log(ctx.run_id if ctx else "memory", "Factory memory", "learn_rule", tier="human", mode="human",
+                             reason=ss.get("rule_hint") or "manager's no", detail=lr)
+                save_cfg(learned_rules=ss.cfg["machines"].get("learned_rules", []) + [lr])
+            if c2.button("No, just this once", key="cv_rs_x", width="stretch"):
+                ss.ask_rule = False
+                say("agent", "Fine. Only this plan was rejected.")
+                st.rerun()
+        # EXPLAINS: ask why about any machine
+        mv = _moves(state) if run else []
+        if mv and not ss.get("ask_rule"):
+            c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
+            pick = c1.selectbox("Ask why about", [m["id"] for m, _ in mv], format_func={m["id"]: m["name"] for m, _ in mv}.get, key="cv_whym")
+            if c2.button("Ask", key="cv_ask", width="stretch"):
+                m, h = next((m, h) for m, h in mv if m["id"] == pick)
+                say("manager", f"Why move the {m['name'].split(' (')[0].lower()} to {_ampm(h)}?")
+                say("agent", A.why_moved(state["problem"], m, h))
+                st.rerun()
+
+
 def work_order_card() -> None:
     if not ss.approved:
         return
@@ -1677,8 +1962,16 @@ def work_order_card() -> None:
         wo = pd.read_csv(io.BytesIO(work_order_csv(ast)))
         body = "".join(f"<tr><td>{escape(str(r.machine))}</td><td class='m'>{r.start} to {r.end}</td><td>{escape(str(r.note))}</td></tr>" for r in wo.itertuples())
         html(f"<table class='rh-log'><thead><tr><th>Machine</th><th>Runs</th><th>Note</th></tr></thead><tbody>{body}</tbody></table>")
-        st.download_button("Download the work order (CSV)", work_order_csv(ast), f"work_order_{ast['forecast']['date']}.csv", "text/csv",
-                           key="wo_today", icon=":material/download:")
+        sent = any(r["action"] == "work_order_sent" and json.loads(r["detail"]).get("day") == str(ast["forecast"]["date"]) for r in ss.audit.rows())
+        c1, c2 = st.columns(2)
+        if c1.button("Sent to the shift lead" if sent else "Send to the shift lead", type="secondary" if sent else "primary", icon=":material/send:",
+                     width="stretch", key="wo_send", disabled=sent):
+            ss.audit.log(ss.approved[0].run_id, "Orchestrator", "work_order_sent", tier="T0", mode="code",
+                         reason="work order sent to the shift lead (prototype: logged, not emailed)", detail={"day": str(ast["forecast"]["date"])})
+            say("agent", "Work order sent to the shift lead.")
+            st.rerun()
+        c2.download_button("Download (CSV)", work_order_csv(ast), f"work_order_{ast['forecast']['date']}.csv", "text/csv",
+                           key="wo_today", icon=":material/download:", width="stretch")
 
 
 def page_today() -> None:
@@ -1686,8 +1979,14 @@ def page_today() -> None:
     next_step(state if run else None, pending, ss.verify is not None)
     run_controls()
     step_strip(state if run else None, pending, ss.verify is not None)
+    if run:
+        c1, c2 = st.columns([1.5, 1], gap="medium")
+        with c1:
+            morning_brief()
+            work_order_card()
+        with c2:
+            conversation()
     plan_tab()
-    work_order_card()
 
 
 def page_data() -> None:
@@ -1730,12 +2029,16 @@ def page_data() -> None:
         else:
             html("<div class='rh-note'>Load meter data first, so there is a day to plan.</div>")
     with st.container(border=True):
+        card_title("rupee", "Free bill check", "A savings estimate from one power bill")
+        bill_check()
+    with st.container(border=True):
         card_title("doc", "New price order", "Read a tariff order from the regulator, check it, sign it off")
         pane_orders([])
 
 
 def page_setup() -> None:
-    page_header("Plant setup", "Set once, change when the plant changes. Saved settings are used by the next plan.")
+    page_header("Plant setup", "Set once, change when the plant changes.")
+    settings_io()
     t1, t2, t3, t4 = st.tabs([":material/precision_manufacturing: Machines and crew rules", ":material/currency_rupee: Prices and contract",
                               ":material/wb_sunny: Rooftop solar", ":material/smart_toy: AI model"])
     with t1:
@@ -1771,6 +2074,7 @@ def page_check() -> None:
     else:
         with st.container(border=True):
             pane_loop_day([])
+    savings_split()
     hist_rows = [r for r in ss.audit.rows() if r["action"] == "verify_savings"]
     if hist_rows:
         with st.container(border=True):
@@ -1845,6 +2149,8 @@ def ask_facts() -> dict:
 
 def ask_answer(q: str) -> str:
     f = ask_facts()
+    if ss.proc.get("redact_names", True):          # names removed before any AI sees the data (deck slide 12)
+        f["plant"] = "the plant"
     if not LLM.live:
         return ASK.offline_answer(q, f)
     model = MODELS[ss.provider]["T2"]

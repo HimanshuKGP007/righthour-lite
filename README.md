@@ -36,6 +36,16 @@ The left menu has one screen per job:
 - **Next-day check:** compare the real meter readings with the approved plan, and see the savings history.
 - **History:** every agent step of this run, and the full audit trail.
 
+**The morning brief and the four moments (deck slides 4 and 7).** Today opens with the brief: "Move 2 machines. Save about ₹2,700", each move on a 24-hour strip with its own saving, ✓ all orders on time, ✓ under contract demand, and Approve, Edit, Reject, Ask why. Beside it, **Talk to the agent** holds the four moments:
+- *Re-plans:* when the work does not fit, the agent asks which rule may flex, with one-click answers.
+- *Explains:* "Why move the press line to 11 am?" "Power costs a third less then … No deadline moves." (computed from the tariff, not written by a model)
+- *Remembers:* reject with a reason, and the agent offers to save it as a rule (keep at usual time, never start before, always finish by). Every later plan obeys it. The rules are listed, and can be removed, in **Factory memory**.
+- *Reacts:* after any re-plan the agent says what changed and why ("Clouds tomorrow. I moved … Still saves ₹1,100.").
+
+Also from the deck: send the work order to the shift lead (logged), a **free bill check** on Upload data, the **shared-savings split** on Next-day check, **factory templates** (foundry, plastics, textiles, cold storage), names removed before any AI sees the data, and **Keep your settings** (download and load) on Plant setup.
+
+**Where data is kept on the hosted app.** Each browser tab has its own session: notes, kept machines, chat and rules-and-limits changes live there and end with the tab. Saved plant settings go to `plant_config.json` and the audit trail to `righthour_audit.sqlite` on the server's disk: shared by everyone using the app, and cleared when Streamlit restarts or redeploys. Use **Plant setup → Keep your settings** to keep your own copy.
+
 **Ask RightHour** (bottom right, on every screen) answers questions about the status, savings, history and the plan, from the facts in the app. With an AI key it uses the large model and can answer any question. Offline, plain code answers the common ones.
 
 ## How it maps to the doc

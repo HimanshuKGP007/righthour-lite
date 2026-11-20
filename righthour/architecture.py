@@ -27,7 +27,7 @@ E = [
     ("opt", "Optimiser (OR-Tools)", ["Finds the cheapest plan that keeps", "every machine rule and deadline."], "optimiser.optimise_schedule", {"optimise"}, "dark", 460, 352, 300, 116),
     ("guard", "Guardrails", ["Rule check. Every", "step logged."], "agents.policy_check", {"policy_check"}, "green", 780, 352, 160, 116),
     ("router", "Router", ["Picks the model for each", "AI step. Maths never uses AI."], "router.py, route", set(), "tool", 460, 486, 236, 86),
-    ("memory", "Factory memory", ["Machine profiles, rules", "and past “no” answers"], "audit.py, config.py", {"reject", "learn", "verify_savings", "setup_saved"}, "tool", 712, 486, 228, 86),
+    ("memory", "Factory memory", ["Machine profiles, rules", "and past “no” answers"], "audit.py, config.py", {"reject", "learn", "verify_savings", "setup_saved", "learn_rule"}, "tool", 712, 486, 228, 86),
     ("manager", "Manager decides", ["Approve, edit or reject", "the plan"], "app.py, graph.py", {"work_order", "reject", "relax_rule"}, "human", 1002, 340, 216, 112),
     ("runs", "Plan runs", ["People switch the machines"], "agents.step_action", {"work_order"}, "light", 1002, 486, 216, 84),
 ]
@@ -49,7 +49,7 @@ def element_states(rows: list[dict], pending: dict | None, verified: bool, loade
         st["manager"] = "ask"
     if "work_order" not in seen:
         st["runs"] = "wait"
-    st["loop_no"] = "part" if "reject" in seen else "wait"
+    st["loop_no"] = "ran" if "learn_rule" in seen else ("part" if "reject" in seen else "wait")
     st["loop_day"] = "ran" if verified or seen & {"verify_savings", "learn"} else "wait"
     return st
 
@@ -220,9 +220,9 @@ BOX_INFO: dict[str, dict] = {
                             "Live: sent to supervisors, or to the factory system. RightHour never switches equipment."],
              "code": "righthour/graph.py · work_order", "produces": "A work order with start and end for each machine."},
     "loop_no": {"title": "Every “no” becomes a new rule", "what": "When a manager rejects a plan, the reason should teach the agent a rule.",
-                "comes_from": ["Today: the reject reason is saved to the audit log. It does not make a rule yet.",
-                               "Live: a person reviews rejected reasons, and good ones become rules in Setup."],
-                "code": "righthour/graph.py · approval (reject)", "produces": "A recorded reason. Rule creation is not built yet."},
+                "comes_from": ["Today: when you reject a plan, the agent asks whether to remember it. Say yes and it becomes a rule in Factory memory.",
+                               "Live: the same, from the manager's phone."],
+                "code": "righthour/graph.py · approval (reject)", "produces": "A rule every later plan obeys."},
     "loop_day": {"title": "Next day: the meters check the saving", "what": "After the day, real meter readings show what was really saved.",
                  "comes_from": ["Today: real readings from the loaded file for a replayed day, or an uploaded CSV. You say what actually ran.",
                                 "Live: yesterday's readings arrive from the meter store with no upload."],
