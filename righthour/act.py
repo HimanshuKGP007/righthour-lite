@@ -32,6 +32,10 @@ Action types:
 Machines (ID = name): {machines}
 Waiting for the manager: {waiting}
 {options}
+The manager often states a fact instead of an order. Work out what it means for the plan and act on it:
+"we're short on night staff, X can't run late" -> rule X finish_by 22. "the panels are dusty / being cleaned" -> set solar_on false.
+"the team hates changes" -> set max_moves 1. "drop the forecast tweak / correction" -> set use_learning false. "squeeze out every rupee" -> set max_moves null, margin_pct 0, min_saving_rs 0.
+Use "answer" only for a real question (status, savings, history, how something works) that asks for no change.
 Examples: "fewer moves please" -> set max_moves 1. "reduce machine switches to 1" or "move only 2 machines" -> set max_moves 1 / 2. "X needs the night crew" or "keep X as usual" -> rule X usual.
 "X must be done by 3 pm" -> rule X finish_by 15. "maybe 8 percent headroom" -> set margin_pct 8. "overcast tomorrow" -> weather Cloudy day.
 Hours are 0-24 as the manager wrote them (6 pm = 18). Never invent a number the manager did not give, except where a word clearly means one
@@ -46,16 +50,30 @@ def limits_text(spec: dict) -> str:
     return "\n".join(out)
 
 
-def propose_llm(llm, model: str, text: str, machines: list[dict], spec: dict, waiting: str | None, options: list[dict]) -> tuple[list[dict], tuple]:
-    opts = ("Options the agent offered: " + "; ".join(f"{o['id']} = {o['text']}" for o in options)) if options else ""
-    sysmsg = PROMPT.format(limits=limits_text(spec), machines="; ".join(f"{m['id']} = {m['name']}" for m in machines),
-                           waiting=waiting or "nothing", options=opts)
+QUESTION = re.compile(r"\?\s*$|^(what|how|why|when|which|who|where|is|are|do|does|did|can you tell|show me|tell me)\b", re.I)
+
+
+def _ask(llm, model: str, sysmsg: str, text: str) -> tuple[list[dict], int, int]:
     raw, tin, tout = llm.complete(model, sysmsg, text, 900)
     if "{" not in raw:
         raise ValueError("the model sent no JSON")
     js = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
     acts = js.get("actions") if isinstance(js, dict) else js
-    return [a for a in (acts or []) if isinstance(a, dict)], (tin, tout)
+    return [a for a in (acts or []) if isinstance(a, dict)], tin, tout
+
+
+def propose_llm(llm, model: str, text: str, machines: list[dict], spec: dict, waiting: str | None, options: list[dict]) -> tuple[list[dict], tuple]:
+    opts = ("Options the agent offered: " + "; ".join(f"{o['id']} = {o['text']}" for o in options)) if options else ""
+    sysmsg = PROMPT.format(limits=limits_text(spec), machines="; ".join(f"{m['id']} = {m['name']}" for m in machines),
+                           waiting=waiting or "nothing", options=opts)
+    acts, tin, tout = _ask(llm, model, sysmsg, text)
+    if all(a.get("type") == "answer" for a in acts) and not QUESTION.search(text.strip()):
+        # a statement read as "no change": ask once more, pointing out that statements usually mean a change
+        hint = ("\nYour first reading was 'answer' (no change). The message is a statement, not a question. Think again: which "
+                "limit, machine rule, weather or order does it imply? Return 'answer' again only if it truly asks for no change.")
+        acts2, t2, o2 = _ask(llm, model, sysmsg + hint, text)
+        acts, tin, tout = (acts2 or acts), tin + t2, tout + o2
+    return acts, (tin, tout)
 
 
 def merge(llm_acts: list[dict] | None, offline: list[dict]) -> list[dict]:

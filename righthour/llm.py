@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -56,15 +57,27 @@ class LLMClient:
     def _post(self, url: str, headers: dict, body: dict | None = None) -> dict:
         req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None, method="POST" if body is not None else "GET",
                                      headers={"Content-Type": "application/json", "User-Agent": "righthour-lite/1.0", **headers})
-        try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                return json.load(resp)
-        except urllib.error.HTTPError as e:
+        for attempt in range(3):                   # "too many requests" (429): wait as the provider asks, then try again
+            try:
+                with urllib.request.urlopen(req, timeout=45) as resp:
+                    return json.load(resp)
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and attempt < 2:
+                    body_txt = e.read().decode(errors="replace")
+                    m = re.search(r"try again in ([\d.]+)(ms|s)", body_txt)
+                    wait = float(m.group(1)) / (1000 if m and m.group(2) == "ms" else 1) if m else float(e.headers.get("retry-after") or 3)
+                    time.sleep(min(max(wait, 0.5), 20) + 0.5)
+                    continue
+                self._fail(e)
+            except (urllib.error.URLError, TimeoutError) as e:
+                self.sink["text"] = f"{LABEL[self.provider]} could not be reached"
+                raise RuntimeError(self.sink["text"]) from e
+        raise RuntimeError(self.sink.get("text") or "no answer")
+
+    def _fail(self, e) -> None:
+        if True:
             msg = re.sub(r"(gsk_|sk-|xai-)[A-Za-z0-9_\-]+", "[key hidden]", e.read().decode(errors="replace")[:160])
             self.sink["text"] = f"{LABEL[self.provider]} error {e.code}: {msg}"
-            raise RuntimeError(self.sink["text"]) from e
-        except (urllib.error.URLError, TimeoutError) as e:
-            self.sink["text"] = f"{LABEL[self.provider]} could not be reached"
             raise RuntimeError(self.sink["text"]) from e
 
     def list_models(self) -> list[str]:

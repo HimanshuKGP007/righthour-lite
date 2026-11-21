@@ -12,6 +12,7 @@ from html import escape
 import io
 import json
 import re
+import os
 import time
 from pathlib import Path
 
@@ -57,6 +58,10 @@ except Exception:  # noqa: BLE001  no secrets file is fine: the app runs offline
     pass
 
 # ------------------------------------------------------------------ state
+# every clock in the app shows the plant's local time, not the server's (Streamlit Cloud runs on UTC)
+os.environ["TZ"] = os.environ.get("RIGHTHOUR_TZ", "Asia/Kolkata")
+if hasattr(time, "tzset"):
+    time.tzset()
 ss = st.session_state
 
 
@@ -2476,9 +2481,9 @@ def conversation() -> None:
         # anything else: the manager types freely, or taps an example
         if not ss.get("ask_rule") and not ss.get("rejecting"):
             chips = chat_chips()
-            cols = st.columns(len(chips))
-            for c, t in zip(cols, chips):
-                c.button(t, key=f"chip_{t}", on_click=handle_chat, args=(t,), width="stretch", type="tertiary")
+            with st.container(horizontal=True, gap="small", key="chips"):     # small boxes that wrap, never cut short
+                for t in chips:
+                    st.button(t, key=f"chip_{t}", on_click=handle_chat, args=(t,), width="content", type="secondary")
         st.chat_input("Ask, tell or instruct the agent…", key="cv_msg", on_submit=handle_chat)
 
 

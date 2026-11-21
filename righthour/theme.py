@@ -348,6 +348,9 @@ html, body, .stApp { font-size:14.5px; }
 .st-key-sethits button { justify-content:flex-start; border:0 !important; box-shadow:none !important; background:transparent; min-height:32px; padding:4px 8px; font-weight:500; }
 .st-key-sethits button > div { justify-content:flex-start !important; width:100%; }
 .st-key-sethits button:hover { background:var(--navy-05) !important; }
+/* chat suggestions: small boxes that wrap */
+.st-key-chips button { min-height:28px !important; padding:3px 11px !important; border-radius:14px !important; }
+.st-key-chips button p { font-size:12.5px !important; white-space:nowrap; }
 /* Ask RightHour: a corner panel, not a full-screen window */
 [data-testid="stDialog"] { background:transparent !important; pointer-events:none; }
 [data-testid="stDialog"] > div { pointer-events:auto; position:fixed !important; right:24px; bottom:90px; top:auto !important; left:auto !important;
