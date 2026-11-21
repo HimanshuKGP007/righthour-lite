@@ -9,7 +9,7 @@ from dataclasses import dataclass
 # Models per provider for the T1 (small) and T2 (large) tiers. Price per million tokens (input, output): check each
 # provider's pricing page before presenting.
 MODELS = {
-    "Groq": {"T1": "openai/gpt-oss-20b", "T2": "openai/gpt-oss-120b"},
+    "Groq": {"T1": "qwen/qwen3.8-27b", "T2": "openai/gpt-oss-120b"},
     "Grok": {"T1": "grok-3-mini", "T2": "grok-3"},
     "Claude": {"T1": "claude-haiku-5-5", "T2": "claude-sonnet-5-5"},
     "Offline": {"T1": "openai/gpt-oss-20b", "T2": "openai/gpt-oss-120b"},  # named in the log, never called
@@ -19,6 +19,7 @@ PRICES = {
     "llama-3.3-70b-versatile": (0.59, 0.79),
     "openai/gpt-oss-20b": (0.075, 0.30),
     "openai/gpt-oss-120b": (0.15, 0.60),
+    "qwen/qwen3.8-27b": (0.80, 4.00),        # Groq listing seen Nov 2026; check console.groq.com before presenting
     "claude-haiku-5-5": (0.10, 0.50),
     "claude-sonnet-5-5": (2.00, 10.00),
     "claude-opus-5-5": (4.00, 20.00),

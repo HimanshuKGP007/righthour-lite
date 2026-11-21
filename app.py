@@ -132,11 +132,13 @@ ss.setdefault("cfg_version", 0)
 SITE, MACH = ss.cfg["site"], ss.cfg["machines"]
 ss.setdefault("hist", None)
 ss.setdefault("bias", 1.0)
+ss.setdefault("session_id", __import__("uuid").uuid4().hex[:12])   # tags this browser session's rows in the audit trail
 if ss.plant == MEM.DEMO:
     ss.setdefault("audit", AuditLog(Path("righthour_audit.sqlite")))
 else:                                          # each plant has its own audit trail
     Path("plant_audit").mkdir(exist_ok=True)
     ss.setdefault("audit", AuditLog(Path("plant_audit") / f"{ss.plant}.sqlite"))
+ss.audit.session = ss.session_id
 ss.setdefault("tariff", ss.cfg["tariff"])
 ss.setdefault("library", {})
 ss.setdefault("run", None)        # dict(ctx, graph, cfg, state, pending)
@@ -294,14 +296,25 @@ ss.provider = ss.w_provider or ss.provider
 ss.setdefault("llm_err", {"text": ""})   # this session's newest AI error
 LLM = LLMClient(ss.provider, api_key=ss.get(f"key_{ss.provider}") or None, error_sink=ss.llm_err)
 ss.llm_sig = (ss.provider, ss.get(f"key_{ss.provider}") or None)
+
+
+def ping_models() -> str:
+    """Asks the small model, then the large one. One answer is enough to plan: each agent hands over to the model that works."""
+    small, large = MODELS[ss.provider]["T1"], MODELS[ss.provider]["T2"]
+    try:
+        LLM.complete(small, "Reply with the single word OK.", "ping", 8)
+        return f"Connected. {small} answered."
+    except Exception as e1:  # noqa: BLE001
+        try:
+            LLM.complete(large, "Reply with the single word OK.", "ping", 8)
+            return f"Connected. {large} answered; the small model did not ({str(e1)[:120]}), so the large model does its steps."
+        except Exception as e2:  # noqa: BLE001
+            return f"Failed: {e2}"
 if not ss.get("setup_done") and not ss.get("setup_checked"):   # on open: if the model answers, skip the setup window
     ss.setup_checked = True
     if LLM.live:
-        try:
-            LLM.complete(MODELS[ss.provider]["T1"], "Reply with the single word OK.", "ping", 8)
-            ss.setup_done, ss.model_ok = True, f"Connected. {MODELS[ss.provider]['T1']} answered."
-        except Exception as e:  # noqa: BLE001  the window opens and shows what failed
-            ss.model_ok = f"Failed: {e}"
+        ss.model_ok = ping_models()
+        ss.setup_done = ss.model_ok.startswith("Connected")
 set_provider(ss.provider)
 ss.setdefault("models", {})          # the small and large model chosen for each provider
 ss.setdefault("model_lists", {})     # live model lists, asked of each provider with your key
@@ -421,11 +434,7 @@ def model_controls() -> None:
         _load_models(force=True)
         st.rerun()
     if b2.button("Test connection", width="stretch", key=f"mtest_{ss.provider}"):
-        try:
-            LLM.complete(MODELS[ss.provider]["T1"], "Reply with the single word OK.", "ping", 8)
-            ss.model_ok = f"Connected. {MODELS[ss.provider]['T1']} answered."
-        except Exception as e:  # noqa: BLE001
-            ss.model_ok = f"Failed: {e}"
+        ss.model_ok = ping_models()
     if ss.get("model_ok"):
         bad = ss.model_ok.startswith("Failed")
         html(f"<div class='rh-note' style='color:var(--{'red' if bad else 'green'});margin-top:6px'>{escape(ss.model_ok)}</div>")
@@ -1953,7 +1962,10 @@ def log_tab() -> None:
 
 
 def audit_tab() -> None:
-    rows = ss.audit.rows()
+    demo = ss.plant == MEM.DEMO               # the demo plant is shared: show only this session's records
+    rows = ss.audit.rows(session=ss.session_id) if demo else ss.audit.rows()
+    if demo:
+        html("<div class='rh-note' style='margin:10px 0'>The demo plant is shared, so only this session's records show. Sign in to keep your plant's full record.</div>")
     df = pd.DataFrame(rows)
     if len(df):
         view = pd.DataFrame({"Time": df["ts"].str.slice(0, 19).str.replace("T", " "), "Run": df["run_id"], "Who": df["agent"],
@@ -2875,7 +2887,7 @@ def page_history() -> None:
 
 def session_timeline() -> None:
     """Every step of this session in order: each plan run with all its agents and tools, every message, try, offer and memory change."""
-    rows = [r for r in ss.audit.rows() if r["ts"] >= ss.get("session_start", "")]
+    rows = ss.audit.rows(session=ss.session_id)          # only this browser session's rows, never another visitor's
     if not rows:
         html("<div class='rh-note' style='margin:14px 0'>Nothing yet. Generate a plan or talk to the agent.</div>")
         return
@@ -3043,6 +3055,7 @@ def new_session() -> None:
     """Top-right refresh: a clean start (chat, today's choices, plan), keeping the sign-in, the AI setup and the plant's memory."""
     keep = {k: ss[k] for k in list(ss.keys()) if str(k).startswith(("key_", "m_T")) or k in
             ("plant", "token", "plant_name", "setup_done", "setup_checked", "w_provider", "models", "model_ok")}
+    # a new session is a new session id too, so This session in History starts empty
     for k in list(ss.keys()):
         del ss[k]
     for k, v in keep.items():

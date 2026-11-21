@@ -143,11 +143,13 @@ LLM_PARSE = ("Read the plant manager's message to a factory scheduling agent. Re
 def parse_goal(text: str) -> dict:
     """Plain words that change how the agent plans. Returns only the settings the words name."""
     t, out = (text or "").lower(), {}
+    for w, n in (("one", 1), ("a single", 1), ("two", 2), ("a couple of", 2), ("three", 3), ("four", 4), ("five", 5)):
+        t = re.sub(rf"\b{w}\b(?=\s+(?:machines?|moves?|switch\w*|shifts?|changes?))", str(n), t)
     if re.search(r"\b(fewer|less|minimal|minimum|least|reduce|cut down)\b.*\b(moves?|changes?|shifts?|switch\w*)\b|\bonly one machine\b|\bmove one machine\b", t):
         out["max_moves"] = 1
     m = re.search(r"\b(?:at most|max(?:imum)?|no more than|only|just)\s*(\d+)\s*(?:machines?|moves?|switch\w*|shifts?|changes?)\b", t) \
         or re.search(r"\b(?:moves?|switch\w*|shifts?|changes?|machines? (?:moved|shifted|switched))\b\D{0,25}?\b(?:to|=|at|of)\s*(\d+)\b", t) \
-        or re.search(r"\b(?:move|shift|switch|change)\s+(?:only\s+)?(\d+)\s+machines?\b", t)
+        or re.search(r"\b(?:move|shift|switch|change|touch)\s+(?:only\s+)?(\d+)\s+machines?\b", t)
     if m:
         out["max_moves"] = int(m.group(1))
     if re.search(r"\b(save (?:as much|more|the most|max)|maximi[sz]e|aggressive|whatever it takes)\b", t):

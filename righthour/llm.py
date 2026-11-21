@@ -66,13 +66,22 @@ class LLMClient:
                     body_txt = e.read().decode(errors="replace")
                     m = re.search(r"try again in ([\d.]+)(ms|s)", body_txt)
                     wait = float(m.group(1)) / (1000 if m and m.group(2) == "ms" else 1) if m else float(e.headers.get("retry-after") or 3)
-                    time.sleep(min(max(wait, 0.5), 20) + 0.5)
+                    if wait > 8:                       # a long wait (a quota): fail now, so the agent can hand over to the other model
+                        self._fail_text(body_txt, e.code)
+                    time.sleep(max(wait, 0.5) + 0.5)
                     continue
                 self._fail(e)
             except (urllib.error.URLError, TimeoutError) as e:
                 self.sink["text"] = f"{LABEL[self.provider]} could not be reached"
                 raise RuntimeError(self.sink["text"]) from e
         raise RuntimeError(self.sink.get("text") or "no answer")
+
+    def _fail_text(self, body_: str, code: int) -> None:
+        msg = re.sub(r"(gsk_|sk-|xai-)[A-Za-z0-9_\-]+", "[key hidden]", body_)
+        msg = re.sub(r"org_[A-Za-z0-9]+", "[account]", msg)
+        m_ = re.search(r'"message"\s*:\s*"([^"]{0,220})', msg)
+        self.sink["text"] = f"{LABEL[self.provider]} error {code}: {m_.group(1) if m_ else msg[:200]}"
+        raise RuntimeError(self.sink["text"])
 
     def _fail(self, e) -> None:
         if True:
@@ -93,12 +102,28 @@ class LLMClient:
         return [i for i in ids if not any(w in i.lower() for w in _NOT_CHAT)]
 
     def complete(self, model: str, system: str, prompt: str, max_tokens: int = 800) -> tuple[str, int, int]:
+        """One call. If the model is out of quota or busy, its backup (same size class) answers instead; last_model says which."""
+        try:
+            out = self._complete(model, system, prompt, max_tokens)
+            self.last_model = model
+            return out
+        except RuntimeError as e:
+            backup = BACKUP.get(model)
+            if not backup or not re.search(r"\b(429|503|rate limit|quota)\b", str(e), re.I):
+                raise
+            out = self._complete(backup, system, prompt, max_tokens)
+            self.last_model = backup
+            return out
+
+    def _complete(self, model: str, system: str, prompt: str, max_tokens: int = 800) -> tuple[str, int, int]:
         if not self.live:
             raise RuntimeError("offline")
         if self.provider in CHAT_URL:
             body = {"model": model, "max_tokens": max_tokens, "temperature": 0,
                     "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}]}
-            if re.search(r"gpt-oss|qwen3|reason", model.lower()):     # thinking models: think briefly, and leave room for the answer
+            if "qwen" in model.lower():                               # short structured tasks: no thinking (fewer tokens, inside Groq's per-minute limit)
+                body.update(max_tokens=max_tokens + 200, reasoning_effort="none")
+            elif re.search(r"gpt-oss|reason", model.lower()):         # thinking models: think briefly, and leave room for the answer
                 body.update(max_tokens=max_tokens + 1500, reasoning_effort="low")
             d = self._post(CHAT_URL[self.provider], self._auth(), body)
             u = d.get("usage", {})
@@ -110,6 +135,10 @@ class LLMClient:
         text = "".join(b.get("text", "") for b in d.get("content", []))
         return text, u.get("input_tokens", 0), u.get("output_tokens", 0)
 
+
+# A model's backup in the same size class, used when the first is out of quota (Groq free tier: 200K tokens a day each).
+# Not Llama Prompt Guard: that is an 86M-parameter classifier for hidden instructions, not a model that can write or plan.
+BACKUP = {"qwen/qwen3.8-27b": "openai/gpt-oss-20b"}
 
 _NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
@@ -149,4 +178,8 @@ def suggest_models(provider: str, ids: list[str]) -> tuple[str, str]:
     prefer = [i for i in ids if not re.search(skip, i.lower())] or ids
     pr = sorted(prefer, key=lambda i: (size(i), i))
     known = [i for i in pr if re.search(r"instant|gpt-oss|llama|qwen|gemma|mixtral|kimi|grok|mistral", i.lower())] or pr
-    return known[0], known[-1]
+    small, large = known[0], known[-1]
+    if provider == "Groq" and "qwen/qwen3.8-27b" in ids:          # the team's chosen small model
+        small = "qwen/qwen3.8-27b"
+        large = next((i for i in ("openai/gpt-oss-120b",) if i in ids), large)
+    return small, large
