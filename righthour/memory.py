@@ -1,11 +1,11 @@
 """Plant sign-in and the plant's long-term memory.
 
-Each plant signs in with a plant code and a PIN. Everything the agent learns for that plant is saved under its code:
+Each plant signs in with a plant code and a passphrase (at least 8 characters). Everything the agent learns for that plant is saved under its code:
 settings, rules learned from the manager, the forecast correction (with its history), the tariff library, the agent
 settings and the guardrail floors. A new tab, a page refresh or a new day loads the same memory.
 
-The PIN is never stored: only a salted PBKDF2 hash. A sign-in gives a random session token; only its SHA-256 hash is
-stored, and it expires. Five wrong PINs lock the plant for five minutes.
+The passphrase is never stored: only a salted PBKDF2 hash. A sign-in gives a random session token; only its SHA-256 hash is
+stored, and it expires. Five wrong tries lock the plant; each lock lasts twice as long. Too many wrong tries across all plants pause sign-in.
 
 Storage is one SQLite file. On Streamlit Community Cloud that file lives on the app's disk, which a redeploy or a
 reboot clears; "Download my memory" keeps a copy.
@@ -26,8 +26,9 @@ ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "righthour_memory.sqlite"
 DEMO = "demo"
 KEYS = ("cfg", "bias", "bias_history", "library", "proc", "price_rules")
-SESSION_DAYS = 30
-MAX_FAILS, LOCK_MIN = 5, 5
+SESSION_DAYS = 1
+MAX_FAILS, LOCK_MIN = 5, 5          # 5 wrong tries lock the plant; each new lock lasts twice as long (5, 10, 20... minutes)
+GLOBAL_FAILS_PER_MIN = 30            # wrong tries across all plants in one minute before every sign-in pauses
 
 
 def _now() -> dt.datetime:
@@ -55,35 +56,46 @@ class MemoryStore:
         with self.lock:
             self.db.executescript("""
                 CREATE TABLE IF NOT EXISTS plants (code TEXT PRIMARY KEY, name TEXT, salt TEXT, pin_hash TEXT, created TEXT,
-                                                   fails INTEGER DEFAULT 0, locked_until TEXT);
+                                                   fails INTEGER DEFAULT 0, locked_until TEXT, locks INTEGER DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS fails (ts TEXT);
                 CREATE TABLE IF NOT EXISTS memory (plant TEXT, key TEXT, value TEXT, updated TEXT, PRIMARY KEY (plant, key));
                 CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, plant TEXT, expires TEXT);""")
+            if "locks" not in {r[1] for r in self.db.execute("PRAGMA table_info(plants)")}:   # a file made by the first version
+                self.db.execute("ALTER TABLE plants ADD COLUMN locks INTEGER DEFAULT 0")
             self.db.commit()
 
     # -------------------------------------------------------------- sign-in
     def sign_in(self, code: str, pin: str, name: str = "") -> tuple[str, bool]:
         """Signs in, or creates the plant on first use. Returns (session token, created)."""
         code = clean_code(code)
-        if not re.fullmatch(r"\d{4,8}", pin or ""):
-            raise ValueError("The PIN is 4 to 8 digits.")
+        if not 8 <= len(pin or "") <= 64:
+            raise ValueError("The passphrase needs at least 8 characters.")
         with self.lock:
-            row = self.db.execute("SELECT salt, pin_hash, fails, locked_until FROM plants WHERE code = ?", (code,)).fetchone()
+            since = (_now() - dt.timedelta(minutes=1)).isoformat()
+            if self.db.execute("SELECT COUNT(*) FROM fails WHERE ts > ?", (since,)).fetchone()[0] >= GLOBAL_FAILS_PER_MIN:
+                raise PermissionError("Too many wrong sign-ins on this app. Wait one minute.")
+            row = self.db.execute("SELECT salt, pin_hash, fails, locked_until, locks FROM plants WHERE code = ?", (code,)).fetchone()
             created = row is None
             if created:
                 salt = secrets.token_bytes(16)
                 self.db.execute("INSERT INTO plants (code, name, salt, pin_hash, created) VALUES (?, ?, ?, ?, ?)",
                                 (code, name.strip()[:60] or code, salt.hex(), _hash_pin(pin, salt), _now().isoformat()))
             else:
-                salt, ph, fails, locked = bytes.fromhex(row[0]), row[1], row[2] or 0, row[3]
+                salt, ph, fails, locked, locks = bytes.fromhex(row[0]), row[1], row[2] or 0, row[3], row[4] or 0
                 if locked and dt.datetime.fromisoformat(locked) > _now():
-                    raise PermissionError(f"Too many wrong PINs. Try again after {dt.datetime.fromisoformat(locked):%H:%M}.")
+                    raise PermissionError(f"Too many wrong tries. Try again after {dt.datetime.fromisoformat(locked):%H:%M}.")
                 if not hmac.compare_digest(_hash_pin(pin, salt), ph):
                     fails += 1
-                    until = (_now() + dt.timedelta(minutes=LOCK_MIN)).isoformat() if fails >= MAX_FAILS else None
-                    self.db.execute("UPDATE plants SET fails = ?, locked_until = ? WHERE code = ?", (0 if until else fails, until, code))
+                    self.db.execute("INSERT INTO fails VALUES (?)", (_now().isoformat(),))
+                    self.db.execute("DELETE FROM fails WHERE ts < ?", ((_now() - dt.timedelta(hours=1)).isoformat(),))
+                    if fails >= MAX_FAILS:     # lock, and each lock lasts twice as long as the one before
+                        until = (_now() + dt.timedelta(minutes=LOCK_MIN * 2 ** min(locks, 8))).isoformat()
+                        self.db.execute("UPDATE plants SET fails = 0, locked_until = ?, locks = ? WHERE code = ?", (until, locks + 1, code))
+                    else:
+                        self.db.execute("UPDATE plants SET fails = ? WHERE code = ?", (fails, code))
                     self.db.commit()
-                    raise PermissionError("Wrong PIN for this plant code.")
-                self.db.execute("UPDATE plants SET fails = 0, locked_until = NULL WHERE code = ?", (code,))
+                    raise PermissionError("Wrong passphrase for this plant code.")
+                self.db.execute("UPDATE plants SET fails = 0, locked_until = NULL, locks = 0 WHERE code = ?", (code,))
             token = secrets.token_urlsafe(24)
             self.db.execute("INSERT INTO sessions VALUES (?, ?, ?)", (hashlib.sha256(token.encode()).hexdigest(), code,
                                                                        (_now() + dt.timedelta(days=SESSION_DAYS)).isoformat()))

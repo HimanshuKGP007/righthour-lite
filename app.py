@@ -66,10 +66,8 @@ def memory_store() -> MEM.MemoryStore:
 
 
 STORE = memory_store()
-if not ss.get("plant"):                        # a page refresh or a new tab: the session token in the link signs the plant back in
-    tok = st.query_params.get("s")
-    code = STORE.resume(tok)
-    ss.plant, ss.token = (code, tok) if code else (MEM.DEMO, None)
+if not ss.get("plant"):                        # a new tab or a refresh starts on the demo plant; sign in again to load a plant's memory
+    ss.plant, ss.token = MEM.DEMO, None         # (no session token in the link: a shared link must never sign anyone in)
 if ss.get("loaded_for") != ss.plant:           # load everything this plant's agent has learned
     mem = STORE.load(ss.plant)
     base = CFG.load() if ss.plant == MEM.DEMO else CFG.defaults()
@@ -81,8 +79,8 @@ if ss.get("loaded_for") != ss.plant:           # load everything this plant's ag
     ss.bias = float(mem.get("bias", 1.0))
     ss.bias_history = mem.get("bias_history", [])
     ss.library = mem.get("library", {})
-    ss.proc = {**PROCESS_DEFAULTS, **mem.get("proc", {})}
-    ss.price_rules = {**PRICE_RULES, **mem.get("price_rules", {})}
+    ss.proc = {**PROCESS_DEFAULTS, **{k: v for k, v in mem.get("proc", {}).items() if k in PROCESS_DEFAULTS}}
+    ss.price_rules = {**PRICE_RULES, **{k: v for k, v in mem.get("price_rules", {}).items() if k in PRICE_RULES}}
     ss.plant_name = "Demo plant" if ss.plant == MEM.DEMO else STORE.plant_name(ss.plant)
     ss.loaded_for = ss.plant
 
@@ -102,16 +100,18 @@ def persist() -> None:
         ss.mem_err = str(e)
 
 
+def save_plant_file(cfg: dict) -> None:
+    """Only the shared demo plant uses plant_config.json. A signed-in plant's settings live only in its own memory."""
+    if ss.plant == MEM.DEMO:
+        CFG.save(cfg)
+
+
 def switch_plant(code: str, token: str | None) -> None:
     """A new plant signs in, or the manager signs out: start clean, keep only typed AI keys."""
     for k in list(ss.keys()):
         if not (str(k).startswith(("key_", "m_T")) or k in ("setup_done", "w_provider", "models", "model_ok")):
             del ss[k]
     ss.plant, ss.token = code, token
-    if token:
-        st.query_params["s"] = token
-    else:
-        st.query_params.clear()
 
 
 ss.setdefault("cfg", CFG.load())            # the plant's own settings: site, tariff, machines, crew rules
@@ -620,10 +620,10 @@ def settings_search() -> None:
 def account_box() -> None:
     """Sign in to a plant: its memory is kept on the server under the plant code."""
     if ss.plant == MEM.DEMO:
-        with st.expander("Demo plant · sign in to keep your memory", icon=":material/login:"):
+        with st.expander("Demo plant · sign in to load your plant's memory", icon=":material/login:"):
             with st.form("signin", border=False):
                 code = st.text_input("Plant code", placeholder="e.g. pune-forge")
-                pin = st.text_input("PIN, 4 to 8 digits", type="password", max_chars=8)
+                pin = st.text_input("Passphrase, at least 8 characters", type="password", max_chars=64)
                 name = st.text_input("Plant name (first sign-in only)", placeholder="e.g. Pune Forge, Unit 2")
                 if st.form_submit_button("Sign in", type="primary", icon=":material/login:", width="stretch"):
                     try:
@@ -824,7 +824,7 @@ def save_cfg(**updates) -> None:
     new = {"site": updates.get("site", cfg["site"]), "tariff": updates.get("tariff", cfg["tariff"]),
            "machines": {**cfg["machines"], **{k: updates[k] for k in ("shiftable", "rules", "learned_rules") if k in updates}}}
     ss.cfg = new
-    CFG.save(new)
+    save_plant_file(new)
     ss.tariff, ss.cfg_version = new["tariff"], ss.cfg_version + 1
     ss.audit.log("setup", "Plant manager", "setup_saved", tier="human", mode="human", reason="plant settings changed",
                  detail={k: "changed" for k in updates})
@@ -958,7 +958,7 @@ def pane_bill(rows) -> None:
     if c1.button("Save and update plan", type="primary", icon=":material/refresh:", disabled=bool(errs), width="stretch", key=f"savebill{v}"):
         save_cfg(site=site, tariff=tariff)
     if c2.button("Back to demo defaults", width="stretch", key=f"billreset{v}"):
-        ss.cfg = CFG.reset()
+        ss.cfg = CFG.reset() if ss.plant == MEM.DEMO else CFG._normalise(CFG.defaults())
         ss.tariff, ss.cfg_version = ss.cfg["tariff"], ss.cfg_version + 1
         st.rerun()
 
@@ -1085,8 +1085,8 @@ def pane_memory(rows) -> None:
              ("Rules for this day only", f"{len(ss.today_rules)}", "Gone when you plan another day. Never saved.", None, "today"),
              ("Forecast correction", f"x{ss.bias:.3f}", f"Learned from {len(ss.get('bias_history', []))} next-day check(s).", "bias", "bias"),
              ("Tariff library", f"{len(ss.library)}", "Price orders you signed off. Read once, reused.", "library", "library"),
-             ("Agent settings changed", f"{len(changed)}", ", ".join(changed[:4]) or "All at the standard values.", "proc", "proc"),
-             ("Price-check floors changed", f"{len(floors)}", ", ".join(floors) or "All at the standard values.", "price_rules", "floors")]
+             ("Agent settings changed", f"{len(changed)}", escape(", ".join(changed[:4])) or "All at the standard values.", "proc", "proc"),
+             ("Price-check floors changed", f"{len(floors)}", escape(", ".join(floors)) or "All at the standard values.", "price_rules", "floors")]
     html("<table class='rh-log'><thead><tr><th>What it remembers</th><th>Now</th><th>Where it came from</th><th>Saved</th></tr></thead><tbody>"
          + "".join(f"<tr><td>{a}</td><td><b>{b}</b></td><td>{c}</td><td>{escape(upd.get(k, '')[:16].replace('T', ' ')) if k else '—'}</td></tr>"
                    for a, b, c, k, _ in items) + "</tbody></table>")
@@ -2005,14 +2005,14 @@ def settings_io() -> None:
                                   "reason": str(lr.get("reason", ""))[:300], "ts": str(lr.get("ts", ""))[:16]})
                 d["cfg"]["machines"]["learned_rules"] = clean
                 ss.cfg, ss.tariff = d["cfg"], d["cfg"]["tariff"]
-                ss.proc = {**PROCESS_DEFAULTS, **d.get("process", {})}
-                ss.price_rules = {**PRICE_RULES, **d.get("price_rules", {})}
+                ss.proc = {**PROCESS_DEFAULTS, **{k: v for k, v in d.get("process", {}).items() if k in PROCESS_DEFAULTS}}
+                ss.price_rules = {**PRICE_RULES, **{k: v for k, v in d.get("price_rules", {}).items() if k in PRICE_RULES}}
                 ss.notes_rows, ss.notes_ver = d.get("notes", ss.notes_rows), ss.notes_ver + 1
                 b = d.get("bias", ss.bias)
                 ss.bias = float(b) if isinstance(b, (int, float)) and 0.5 <= b <= 2.0 else ss.bias
                 ss.bias_history = [h for h in d.get("bias_history", []) if isinstance(h, dict) and isinstance(h.get("bias"), (int, float))][-200:]
                 ss.library = {str(k): v for k, v in d.get("library", {}).items() if isinstance(v, dict) and not validate_tariff_errors(v)}
-                CFG.save(ss.cfg)
+                save_plant_file(ss.cfg)
                 ss.cfg_version += 1
                 ss.trigger_plan = True
                 st.rerun()
@@ -2107,7 +2107,7 @@ def read_message(text: str, ms: list[dict], waiting: str | None) -> dict:
 def _save_rule_quiet(lr: dict) -> None:
     cfg = ss.cfg
     cfg["machines"] = {**cfg["machines"], "learned_rules": cfg["machines"].get("learned_rules", []) + [lr]}
-    CFG.save(cfg)
+    save_plant_file(cfg)
     ss.cfg_version += 1
     ss.audit.log(_rid(), "Factory memory", "learn_rule", tier="human", mode="human", reason=lr.get("reason") or "manager's rule", detail=lr)
     ss.trigger_plan = True
@@ -2217,7 +2217,7 @@ def act_on(text: str) -> None:
             cfg = ss.cfg
             sh = [{**m, "earliest_h": a["earliest"], "latest_finish_h": a["latest"]} if m["id"] == a["machine"] else m for m in cfg["machines"]["shiftable"]]
             cfg["machines"] = {**cfg["machines"], "shiftable": sh}
-            CFG.save(cfg)
+            save_plant_file(cfg)
             ss.cfg_version += 1
             done.append(f"{names[a['machine']]} may run {a['earliest']:02d}:00 to {a['latest']:02d}:00")
         elif t == "weather":
