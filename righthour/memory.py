@@ -77,6 +77,7 @@ class MemoryStore:
             row = self.db.execute("SELECT salt, pin_hash, fails, locked_until, locks FROM plants WHERE code = ?", (code,)).fetchone()
             created = row is None
             if created:
+                wrong = False
                 salt = secrets.token_bytes(16)
                 self.db.execute("INSERT INTO plants (code, name, salt, pin_hash, created) VALUES (?, ?, ?, ?, ?)",
                                 (code, name.strip()[:60] or code, salt.hex(), _hash_pin(pin, salt), _now().isoformat()))
@@ -85,8 +86,6 @@ class MemoryStore:
                 if locked and dt.datetime.fromisoformat(locked) > _now():
                     raise PermissionError(f"Too many wrong tries. Try again after {dt.datetime.fromisoformat(locked):%H:%M}.")
                 if not hmac.compare_digest(_hash_pin(pin, salt), ph):
-                    if busy:                   # many wrong tries app-wide: slow every wrong try down; a right one still gets in
-                        time.sleep(2)
                     fails += 1
                     self.db.execute("INSERT INTO fails VALUES (?)", (_now().isoformat(),))
                     self.db.execute("DELETE FROM fails WHERE ts < ?", ((_now() - dt.timedelta(hours=1)).isoformat(),))
@@ -96,9 +95,17 @@ class MemoryStore:
                     else:
                         self.db.execute("UPDATE plants SET fails = ? WHERE code = ?", (fails, code))
                     self.db.commit()
-                    raise PermissionError("Wrong passphrase for this plant code.")
-                self.db.execute("UPDATE plants SET fails = 0, locked_until = NULL, locks = 0 WHERE code = ?", (code,))
-            token = secrets.token_urlsafe(24)
+                    wrong = True
+                else:
+                    wrong = False
+                    self.db.execute("UPDATE plants SET fails = 0, locked_until = NULL, locks = 0 WHERE code = ?", (code,))
+            self.db.commit()
+        if not created and wrong:                # outside the lock: a slow wrong try never holds up anyone else
+            if busy:                             # many wrong tries app-wide: each wrong try waits; a right one gets in at once
+                time.sleep(2)
+            raise PermissionError("Wrong passphrase for this plant code.")
+        token = secrets.token_urlsafe(24)
+        with self.lock:
             self.db.execute("INSERT INTO sessions VALUES (?, ?, ?)", (hashlib.sha256(token.encode()).hexdigest(), code,
                                                                        (_now() + dt.timedelta(days=SESSION_DAYS)).isoformat()))
             self.db.commit()
