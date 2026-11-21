@@ -5,5 +5,13 @@
   "contract_demand_kva": 1000,
   "month_to_date_max_kva": 900,
   "rooftop_pv_kwp": 150,
-  "working_days_per_year": 300
+  "working_days_per_year": 300,
+  "holidays": [
+    "2018-01-01",
+    "2018-02-16",
+    "2018-05-01",
+    "2018-08-15",
+    "2018-10-02",
+    "2018-12-25"
+  ]
 }

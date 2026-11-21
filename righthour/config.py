@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 CONFIG_PATH = ROOT / "plant_config.json"
 
-MACHINE_COLS = ["Machine", "kW", "Hours", "Earliest start", "Latest finish", "Usual start",
+RUN_DAYS = {"Every day": (0, 1, 2, 3, 4, 5, 6), "Mon–Sat": (0, 1, 2, 3, 4, 5), "Mon–Fri": (0, 1, 2, 3, 4), "Weekends": (5, 6)}
+MACHINE_COLS = ["Machine", "Runs on", "kW", "Hours", "Earliest start", "Latest finish", "Usual start",
                 "Could start as early as", "Could finish as late as", "Side cost if relaxed", "Why this window"]
 RULE_COLS = ["Machine A", "Machine B", "Why they cannot run together", "Can be relaxed?", "Wording when relaxed", "Side cost if relaxed"]
 SLOT_COLS = ["From hour", "To hour", "Band", "Rate (₹ per kVAh)"]
@@ -77,13 +78,19 @@ def slug(text: str, taken: set[str] | None = None) -> str:
     return out
 
 
+def runs_today(m: dict, day, holidays=()) -> bool:
+    """Does this machine run on this day? A plant holiday counts as a Sunday."""
+    wd = 6 if str(day) in set(map(str, holidays or ())) else day.weekday()
+    return wd in RUN_DAYS.get(m.get("runs_on", "Every day"), RUN_DAYS["Every day"])
+
+
 def _num(v):
     return None if v is None or (isinstance(v, float) and math.isnan(v)) or v == "" else v
 
 
 # ---------------------------------------------------------------- machines
 def machines_to_rows(machines: list[dict]) -> list[dict]:
-    return [{"Machine": m["name"], "kW": m["kw"], "Hours": m["duration_h"], "Earliest start": m["earliest_h"],
+    return [{"Machine": m["name"], "Runs on": m.get("runs_on", "Every day"), "kW": m["kw"], "Hours": m["duration_h"], "Earliest start": m["earliest_h"],
              "Latest finish": m["latest_finish_h"], "Usual start": m.get("baseline_start_h"),
              "Could start as early as": m.get("relax_earliest_h"), "Could finish as late as": m.get("relax_latest_finish_h"),
              "Side cost if relaxed": m.get("relax_note", ""), "Why this window": m.get("why_window", "")} for m in machines]
@@ -114,7 +121,8 @@ def rows_to_machines(rows: list[dict]) -> tuple[list[dict], list[str]]:
         taken.add(mid)
         m = {"id": mid, "name": name, "kw": kw, "duration_h": dur, "earliest_h": int(e), "latest_finish_h": int(l),
              "baseline_start_h": int(usual) if usual is not None else None, "continuous": True,
-             "why_window": (r.get("Why this window") or "").strip()}
+             "why_window": (r.get("Why this window") or "").strip(),
+             "runs_on": r.get("Runs on") if r.get("Runs on") in RUN_DAYS else "Every day"}
         re_, rl = _num(r.get("Could start as early as")), _num(r.get("Could finish as late as"))
         if re_ is not None:
             if float(re_) < e:

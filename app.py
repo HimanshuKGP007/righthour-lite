@@ -927,7 +927,9 @@ def pane_machines() -> None:
     tcols = ("Earliest start", "Latest finish", "Usual start", "Could start as early as", "Could finish as late as")
     shown = pd.DataFrame([{**r, **{c: to_t(r.get(c)) for c in tcols}} for r in CFG.machines_to_rows(cfg["machines"]["shiftable"])], columns=CFG.MACHINE_COLS)
     mach = st.data_editor(shown, num_rows="dynamic", hide_index=True, width="stretch", key=f"mach{v}",
-                          column_config={"kW": st.column_config.NumberColumn("Power (kW)", min_value=1, max_value=5000),
+                          column_config={"Runs on": st.column_config.SelectboxColumn("Runs on", options=list(CFG.RUN_DAYS), required=True, default="Every day",
+                                                                                     help="Days this machine runs. On other days, and on plant holidays, it is not planned."),
+                                         "kW": st.column_config.NumberColumn("Power (kW)", min_value=1, max_value=5000),
                                          "Hours": st.column_config.NumberColumn("Runs for (h)", min_value=0.5, max_value=24, step=0.5, format="%.1f h"),
                                          "Earliest start": time_col("Earliest start", required=True), "Latest finish": time_col("Must finish by", required=True),
                                          "Usual start": time_col("Usual start", "When it runs today. The saving is measured against this.", required=True),
@@ -958,6 +960,9 @@ def pane_bill(rows) -> None:
     site["working_days_per_year"] = c.number_input("Working days a year", 1, 366, int(site["working_days_per_year"]), 1, key=f"wd{v}",
                                                    help="Used only to turn a daily saving into a yearly figure.")
     site["name"] = st.text_input("Plant name", site["name"], key=f"nm{v}")
+    hol = st.text_input("Plant holidays (dates, comma-separated, YYYY-MM-DD)", ", ".join(site.get("holidays", [])), key=f"hol{v}",
+                        help="On a holiday only the machines that run every day are planned, as on a Sunday.")
+    site["holidays"] = sorted({h.strip() for h in hol.split(",") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", h.strip())})
     st.markdown("**Price bands**")
     shown = pd.DataFrame([{**r, "From hour": to_t(r["From hour"]), "To hour": to_t(r["To hour"])} for r in CFG.tariff_to_rows(cfg["tariff"])], columns=CFG.SLOT_COLS)
     slots = st.data_editor(shown, num_rows="dynamic", hide_index=True, width="stretch", key=f"slots{v}",
@@ -2079,6 +2084,10 @@ def morning_brief() -> None:
             rows += (f"<div class='rh-mv kept'><div class='n'>{escape(f['name'])}</div><div class='tl'><div class='bands'>{_band_strip()}</div>"
                      f"<i class='fix' style='left:{f['start_h'] / 24 * 100:.1f}%;width:{(f['end_h'] - f['start_h']) / 24 * 100:.1f}%'></i></div>"
                      f"<div class='a'>stays: mid-batch rule</div><div class='s'>kept</div></div>")
+        idle = state["problem"].get("idle") or []
+        if idle:
+            rows += (f"<div class='rh-mv kept'><div class='n'>Off today{' (plant holiday)' if state['problem'].get('holiday') else ''}</div>"
+                     f"<div class='tl' style='background:none'></div><div class='a'>{escape(', '.join(n.split(' (')[0] for n in idle))}</div><div class='s'>—</div></div>")
         html(f"<div class='rh-mvs'><div class='rh-axis'><span></span><span class='ticks'><em>0h</em><em>6h</em><em>12h</em><em>18h</em><em>24h</em></span></div>{rows}</div>")
         ver = [json.loads(r["detail"]) for r in ss.audit.rows() if r["action"] == "verify_savings"]
         html("<div class='rh-ticks'>"

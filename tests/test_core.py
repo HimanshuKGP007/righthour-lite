@@ -80,7 +80,7 @@ def test_day_ahead_plan_reproduces_the_deck_demo():
     assert r["status"] == "awaiting_approval"
     assert r["plan"]["schedule"]["compressors"] == 11 and r["plan"]["schedule"]["press"] == 11
     assert {k: v for k, v in r["plan"]["schedule"].items() if k not in ("compressors", "press")} == \
-        {"oven": 18, "shotblast": 21, "pumps": 2}
+        {"shotblast": 21, "pumps": 2}                          # the demo day is a Saturday: the oven runs Mon-Fri only
     assert r["saving_rs"] == pytest.approx(2704, abs=0.5)
     assert "800 kVAh" in r["explanation"] and "untouched" in r["explanation"]
     tiers = [(s["action"], s["tier"]) for s in r["steps"]]
@@ -252,3 +252,13 @@ def test_learning_ignores_outlier_days_and_caps_the_step():
     assert v["new_bias"] == pytest.approx(1.0) and "outlier" in v["learn_note"]
     up = pd.DataFrame({"ts": ts, "kw": [x * 1.4 for x in r["forecast"]["kw"]], "pf": r["forecast"]["pf"]})
     assert verify_and_learn(ctx, r, r["plan"]["schedule"], up)["new_bias"] == pytest.approx(1.10)
+
+
+def test_machines_run_only_on_their_days():
+    import datetime as dt
+    from righthour.config import runs_today
+    m = {"runs_on": "Mon–Sat"}
+    assert runs_today(m, dt.date(2018, 12, 29)) and not runs_today(m, dt.date(2018, 12, 30))      # Sat yes, Sun no
+    assert not runs_today(m, dt.date(2018, 12, 25), ["2018-12-25"])                                 # a holiday is a Sunday
+    assert runs_today({"runs_on": "Every day"}, dt.date(2018, 12, 25), ["2018-12-25"])
+    assert runs_today({}, dt.date(2018, 12, 30))                                                    # no setting: every day

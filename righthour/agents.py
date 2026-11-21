@@ -251,7 +251,11 @@ def _extras(st: dict) -> list[dict]:
 
 
 def build_problem(ctx: Context, st: dict, relax: dict | None = None, drop_rule: str | None = None) -> dict:
-    shiftable = copy.deepcopy(ctx.machines_cfg["shiftable"]) + copy.deepcopy(_extras(st))
+    from .config import runs_today
+    day, hol = st["forecast"]["date"], ctx.site.get("holidays", [])
+    running = [m for m in ctx.machines_cfg["shiftable"] if runs_today(m, day, hol)]   # off today: not planned, nothing to save
+    idle = [m["name"] for m in ctx.machines_cfg["shiftable"] if m not in running]
+    shiftable = copy.deepcopy(running) + copy.deepcopy(_extras(st))
     if relax and relax.get("field"):
         target = relax.get("machine") or (_extras(st)[0]["id"] if _extras(st) else None)
         for m in shiftable:
@@ -264,7 +268,8 @@ def build_problem(ctx: Context, st: dict, relax: dict | None = None, drop_rule: 
         if h is not None:
             m["earliest_h"], m["latest_finish_h"] = int(h), int(h) + m["duration_h"]
     no_overlap = [(r["a"], r["b"]) for r in ctx.machines_cfg["rules"] if r["type"] == "no_overlap" and r["id"] != drop_rule]
-    return {"base_kw": st["forecast"]["kw"], "pf": st["forecast"]["pf"], "pv_kw": st["pv"]["kw"], "fixed": st["fixed"],
+    return {"idle": idle, "holiday": str(day) in set(map(str, hol)),
+            "base_kw": st["forecast"]["kw"], "pf": st["forecast"]["pf"], "pv_kw": st["pv"]["kw"], "fixed": st["fixed"],
             "shiftable": shiftable, "no_overlap": no_overlap, "tariff": ctx.tariff,
             "contract_demand_kva": ctx.site["contract_demand_kva"], "mtd_max_kva": ctx.site["month_to_date_max_kva"],
             "guard": {k: {**PROCESS_DEFAULTS, **(ctx.process or {})}[k] for k in GUARD_KEYS}}

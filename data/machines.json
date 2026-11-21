@@ -1,32 +1,122 @@
 {
-  "daily_notes": [
-    {"id": "furnace", "text": "Furnace batch tomorrow from 10 am to 4 pm, 300 kW. It cannot stop mid-batch.",
-     "defaults": {"id": "furnace", "name": "Induction furnace batch", "hard": true}}
-  ],
-  "shiftable": [
-    {"id": "compressors", "name": "Air compressors (2 units)", "kw": 120, "duration_h": 4, "earliest_h": 6, "latest_finish_h": 23, "baseline_start_h": 17, "continuous": true,
-     "why_window": "supply the press line; any time from 06:00"},
-    {"id": "press", "name": "Press line", "kw": 80, "duration_h": 4, "earliest_h": 7, "latest_finish_h": 22, "baseline_start_h": 17, "continuous": true,
-     "why_window": "day or evening crew"},
-    {"id": "oven", "name": "Tempering oven", "kw": 90, "duration_h": 3, "earliest_h": 18, "latest_finish_h": 24, "baseline_start_h": 18, "continuous": true,
-     "why_window": "parts arrive from the evening forging shift"},
-    {"id": "shotblast", "name": "Shot blasting", "kw": 60, "duration_h": 2, "earliest_h": 21, "latest_finish_h": 24, "baseline_start_h": 21, "continuous": true,
-     "why_window": "only after tempering"},
-    {"id": "pumps", "name": "Cooling-tower pumps", "kw": 40, "duration_h": 3, "earliest_h": 0, "latest_finish_h": 9, "baseline_start_h": 2, "continuous": true,
-     "why_window": "run with the night cooling cycle"}
-  ],
-  "rules": [
-    {"id": "crew_press_shot", "text": "Shot blasting and press line share one crew, so they cannot run at the same time",
-     "type": "no_overlap", "a": "press", "b": "shotblast", "hard": false,
-     "relax_text": "Let shot blasting run alongside the press line (second crew on overtime)", "side_cost_note": "overtime for a second crew"},
-    {"id": "contract_demand", "text": "Site demand must stay at or below the contract demand", "type": "contract_demand", "hard": true}
-  ],
-  "extra_machine": {
-    "note": "New order: grinding line, 400 kW for 4 hours. Crew starts at 9 am and the order must be finished by 5 pm.",
-    "machine": {"id": "grinding", "name": "Grinding line (new order)", "kw": 400, "duration_h": 4, "earliest_h": 9, "latest_finish_h": 17, "baseline_start_h": null, "continuous": true},
-    "relaxations": [
-      {"id": "early_crew", "text": "Start the grinding crew at 06:00 (early shift)", "field": "earliest_h", "value": 6, "side_cost_note": "early-shift allowance for one crew"},
-      {"id": "late_dispatch", "text": "Let the grinding order finish by 21:00 (later dispatch)", "field": "latest_finish_h", "value": 21, "side_cost_note": "dispatch moves to the evening"}
-    ]
+ "daily_notes": [
+  {
+   "id": "furnace",
+   "text": "Furnace batch tomorrow from 10 am to 4 pm, 300 kW. It cannot stop mid-batch.",
+   "defaults": {
+    "id": "furnace",
+    "name": "Induction furnace batch",
+    "hard": true
+   }
   }
+ ],
+ "shiftable": [
+  {
+   "id": "compressors",
+   "name": "Air compressors (2 units)",
+   "kw": 120,
+   "duration_h": 4,
+   "earliest_h": 6,
+   "latest_finish_h": 23,
+   "baseline_start_h": 17,
+   "continuous": true,
+   "why_window": "supply the press line; any time from 06:00",
+   "runs_on": "Mon–Sat"
+  },
+  {
+   "id": "press",
+   "name": "Press line",
+   "kw": 80,
+   "duration_h": 4,
+   "earliest_h": 7,
+   "latest_finish_h": 22,
+   "baseline_start_h": 17,
+   "continuous": true,
+   "why_window": "day or evening crew",
+   "runs_on": "Mon–Sat"
+  },
+  {
+   "id": "oven",
+   "name": "Tempering oven",
+   "kw": 90,
+   "duration_h": 3,
+   "earliest_h": 18,
+   "latest_finish_h": 24,
+   "baseline_start_h": 18,
+   "continuous": true,
+   "why_window": "parts arrive from the evening forging shift",
+   "runs_on": "Mon–Fri"
+  },
+  {
+   "id": "shotblast",
+   "name": "Shot blasting",
+   "kw": 60,
+   "duration_h": 2,
+   "earliest_h": 21,
+   "latest_finish_h": 24,
+   "baseline_start_h": 21,
+   "continuous": true,
+   "why_window": "only after tempering",
+   "runs_on": "Mon–Sat"
+  },
+  {
+   "id": "pumps",
+   "name": "Cooling-tower pumps",
+   "kw": 40,
+   "duration_h": 3,
+   "earliest_h": 0,
+   "latest_finish_h": 9,
+   "baseline_start_h": 2,
+   "continuous": true,
+   "why_window": "run with the night cooling cycle",
+   "runs_on": "Every day"
+  }
+ ],
+ "rules": [
+  {
+   "id": "crew_press_shot",
+   "text": "Shot blasting and press line share one crew, so they cannot run at the same time",
+   "type": "no_overlap",
+   "a": "press",
+   "b": "shotblast",
+   "hard": false,
+   "relax_text": "Let shot blasting run alongside the press line (second crew on overtime)",
+   "side_cost_note": "overtime for a second crew"
+  },
+  {
+   "id": "contract_demand",
+   "text": "Site demand must stay at or below the contract demand",
+   "type": "contract_demand",
+   "hard": true
+  }
+ ],
+ "extra_machine": {
+  "note": "New order: grinding line, 400 kW for 4 hours. Crew starts at 9 am and the order must be finished by 5 pm.",
+  "machine": {
+   "id": "grinding",
+   "name": "Grinding line (new order)",
+   "kw": 400,
+   "duration_h": 4,
+   "earliest_h": 9,
+   "latest_finish_h": 17,
+   "baseline_start_h": null,
+   "continuous": true
+  },
+  "relaxations": [
+   {
+    "id": "early_crew",
+    "text": "Start the grinding crew at 06:00 (early shift)",
+    "field": "earliest_h",
+    "value": 6,
+    "side_cost_note": "early-shift allowance for one crew"
+   },
+   {
+    "id": "late_dispatch",
+    "text": "Let the grinding order finish by 21:00 (later dispatch)",
+    "field": "latest_finish_h",
+    "value": 21,
+    "side_cost_note": "dispatch moves to the evening"
+   }
+  ]
+ }
 }
