@@ -396,6 +396,13 @@ details.rh-run[open] > summary::before { transform:rotate(90deg); }
 details.rh-run > summary svg { width:14px; height:14px; vertical-align:-2px; }
 details.rh-run > summary span { display:block; margin:2px 0 0 14px; font-size:12.5px; color:var(--muted); }
 details.rh-run table.rh-tl { margin:0; }
+.rm-flow { display:flex; flex-wrap:wrap; align-items:stretch; gap:6px; padding:12px; }
+.rm-box { position:relative; flex:0 1 168px; border:1px solid var(--rule); border-left:4px solid var(--navy-30); border-radius:8px; padding:8px 10px; background:#fff; font-size:12.5px; }
+.rm-box.t2 { border-left-color:var(--navy); } .rm-box.t1 { border-left-color:var(--navy-60); } .rm-box.human { border-left-color:var(--green); background:var(--green-bg); }
+.rm-h { display:flex; gap:6px; align-items:center; margin-bottom:4px; } .rm-h b { font-size:13px; color:var(--ink); line-height:1.2; }
+.rm-a { color:var(--ink); line-height:1.35; } .rm-m { color:var(--muted); margin-top:4px; font-family:'IBM Plex Mono', monospace; font-size:11px; word-break:break-word; }
+.rm-arrow { align-self:center; font-style:normal; color:var(--navy-30); font-size:16px; }
+.rm-dot { position:absolute; top:6px; right:6px; width:8px; height:8px; border-radius:50%; background:var(--red); }
 /* chat suggestions: small boxes that wrap */
 .st-key-chips button { min-height:28px !important; padding:3px 11px !important; border-radius:14px !important; }
 .st-key-chips button p { font-size:12.5px !important; white-space:nowrap; }

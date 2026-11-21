@@ -1461,7 +1461,8 @@ ACTION_WORDS = {"validate_data": "Checked the meter readings", "forecast_load": 
                 "what_if": "Tried a change first", "what_if_discarded": "Discarded a tried change", "offer_options": "Offered a bigger saving",
                 "offer_declined": "Kept the main plan", "one_time_rule": "Rule for this day only", "forget": "Forgot from memory",
                 "memory_saved": "Saved to factory memory", "ask_question": "Question to Ask RightHour",
-                "answered": "Answered your question", "explain_move": "Explained why machines moved"}
+                "answered": "Answered your question", "explain_move": "Explained why machines moved",
+                "week_plan": "Planned the week ahead", "pilot_sample": "Built a sample savings total"}
 TIER_WORDS = {"T0": "Plain code", "T1": "Small AI model", "T2": "Large AI model", "human": "A person"}
 
 
@@ -2775,6 +2776,63 @@ def why_plan() -> None:
          f"of {SITE['contract_demand_kva']} contract. Guardrails used: {', '.join(x for x in gl if x) or 'the standard ones'}.</div>")
 
 
+def plan_days(days: list) -> list[dict]:
+    """Plans several days with plain code and the optimiser (no AI calls, nothing logged as a run). Same settings as today's plan."""
+    out = []
+    for d in days:
+        try:
+            c = Context(ss.cfg["site"], ss.tariff, ss.cfg["machines"], ss.hist, goal=goal or "Cut tomorrow's bill.",
+                        cloudy=WEATHER[weather] if WEATHER[weather] is not None else False, plan_date=d, notes=notes_for_run(), bias=ss.bias,
+                        llm=LLMClient("Offline"), audit=AuditLog(":memory:"), process={**ss.proc, **ASK.parse_goal(goal or "")})
+            _, _, s_, _ = start(c)
+            prob = s_.get("problem") or {}
+            out.append({"date": d, "saving": s_.get("saving_rs") or 0.0, "moves": len(_moves(s_)), "peak": (s_.get("plan") or {}).get("peak_kva"),
+                        "idle": prob.get("idle", []), "holiday": prob.get("holiday"), "kept": s_.get("status") == "fallback", "err": None})
+        except Exception as e:  # noqa: BLE001
+            out.append({"date": d, "saving": 0.0, "moves": 0, "peak": None, "idle": [], "holiday": False, "kept": True, "err": str(e)[:120]})
+    return out
+
+
+def week_ahead() -> None:
+    """Feature: the next 7 days at once, because shifts are planned by the week."""
+    with st.container(border=True, key="week"):
+        card_title("clock", "Week ahead", "The next 7 days with today's settings. Plain code and the optimiser only, no AI cost.")
+        key = (plan_date, ss.cfg_version, json.dumps(ss.proc, sort_keys=True, default=str), goal, weather, ss.bias)
+        wk = ss.get("week")
+        if wk and wk["key"] != key:
+            html("<div class='rh-note'>Settings changed since this week plan. Plan the week again to update it.</div>")
+        if st.button("Plan the week" if not wk else "Plan the week again", icon=":material/date_range:", key="week_go", type="secondary"):
+            days = [plan_date + dt.timedelta(days=i) for i in range(7)]
+            with st.spinner("Planning 7 days with the optimiser..."):
+                t0 = time.time()
+                res = plan_days(days)
+            ss.week = {"key": key, "res": res}
+            ss.audit.log(_rid(), "Week planner", "week_plan", tier="T0", mode="code",
+                         reason=f"planned {days[0]:%d %b} to {days[-1]:%d %b}: Optimiser · OR-Tools ran 7 times in {time.time() - t0:.1f} s; "
+                                f"about {rs(sum(r['saving'] for r in res))} for the week", detail={"days": [str(d) for d in days]})
+            wk = ss.week
+        if not wk:
+            return
+        res = wk["res"]
+        body = ""
+        for r in res:
+            note = ("plant holiday" if r["holiday"] else "") or (f"off: {', '.join(r['idle'])}" if r["idle"] else "")
+            if r["err"]:
+                note = "could not plan: " + r["err"]
+            elif r["kept"]:
+                note = (note + "; " if note else "") + "usual schedule kept"
+            peak_txt = f"{r['peak']:.0f} kVA" if r["peak"] else ""
+            body += (f"<tr><td><b>{r['date']:%a}</b> {r['date']:%d %b}</td><td class='r'>{r['moves']}</td>"
+                     f"<td class='r'>{peak_txt}</td>"
+                     f"<td class='rh-note'>{escape(note)}</td><td class='r' style='color:var(--green)'><b>{rs(r['saving'])}</b></td></tr>")
+        tot = sum(r["saving"] for r in res)
+        kpis([(rs(tot), "saved this week", "g"), (rs(tot / 7 * 30), "about a month", ""), (str(sum(r["moves"] for r in res)), "machine moves", "")])
+        html("<table class='rh-log'><thead><tr><th>Day</th><th class='r'>Moves</th><th class='r'>Highest demand</th><th>Note</th>"
+             f"<th class='r'>Saving</th></tr></thead><tbody>{body}</tbody></table>"
+             "<div class='rh-note' style='margin-top:6px'>Each day uses its own meter forecast and machine run days. Today's notes, limits and weather "
+             "are assumed for every day; only today's plan goes to the shift lead.</div>")
+
+
 def page_today() -> None:
     page_header("Today's plan", escape(str(SITE['name'])))
     next_step(state if run else None, pending, ss.verify is not None)
@@ -2787,7 +2845,22 @@ def page_today() -> None:
             work_order_card()
         with c2:
             conversation()
+        week_ahead()
     plan_tab()
+
+
+def pf_note(h: pd.DataFrame) -> None:
+    """What the file's power factor means, and where RightHour uses it."""
+    if "pf" not in h or h.empty:
+        return
+    light = h["kw"] < h["kw"].median() * 0.25
+    idle, busy = float(h.loc[light, "pf"].median()) if light.any() else None, float(h.loc[~light, "pf"].median())
+    txt = (f"<b>Power factor in this file:</b> about {busy:.2f} under load" + (f", {idle:.2f} when the plant is nearly idle" if idle is not None else "")
+           + ". RightHour uses it only for the rest of the plant's load. Each machine it schedules uses its own power factor from Plant setup.")
+    if idle is not None and idle < 0.8:
+        txt += (" The very low idle values come from the sample plant's meter (DAEWOO Steel, South Korea) at night. Indian plants usually keep "
+                "0.9 or more with capacitor banks, because the tariff charges for a low power factor. It does not change which hour a machine runs.")
+    html(f"<div class='rh-note' style='margin:-4px 0 10px;padding:8px 10px;background:var(--amber-bg);border-radius:8px'>{txt}</div>")
 
 
 def page_data() -> None:
@@ -2801,6 +2874,7 @@ def page_data() -> None:
             html(f"<div class='rh-kv three'><div><b>{f['n_rows']:,}</b>readings</div><div><b>{f['n_full_days']}</b>full days</div>"
                  f"<div><b>{str(f['last_ts'])[:10]}</b>latest day</div></div>"
                  f"<div class='rh-note' style='margin-bottom:10px'>{escape(str(h.attrs.get('source', '')))}</div>")
+            pf_note(h)
         meter_controls("d")
     with right:
         with st.container(border=True):
@@ -2922,8 +2996,45 @@ def page_control_room() -> None:
         all_limits()
 
 
+def pilot_savings() -> None:
+    """Proof of savings: the running total since the pilot started. Until real days are checked, a sample shows the view."""
+    ver = [r for r in ss.audit.rows() if r["action"] == "verify_savings"]
+    with st.container(border=True, key="pilot"):
+        if ver:
+            vals = [(r["ts"][:10], json.loads(r["detail"]).get("verified_saving_rs") or 0) for r in ver]
+            card_title("rupee", "Saved since the pilot started", f"{len(vals)} checked day(s), from the real meter readings")
+            sample = False
+        else:
+            card_title("rupee", "Saved since the pilot started", "SAMPLE: no day has been checked yet")
+            html("<div class='rh-note' style='margin-bottom:6px'>This is what the running total will look like. Until the plant follows a plan and "
+                 "the next day's meter readings are checked, the numbers below are <b>expected</b> savings from the past 14 days of meter data, "
+                 "not verified ones.</div>")
+            if not ss.get("pilot_sample"):
+                if st.button("Show a sample from the last 14 days", icon=":material/insights:", key="pilot_go"):
+                    with st.spinner("Planning 14 past days with the optimiser..."):
+                        res = plan_days([plan_date - dt.timedelta(days=i) for i in range(14, 0, -1)])
+                    ss.pilot_sample = [(str(r["date"]), r["saving"]) for r in res]
+                    ss.audit.log(_rid(), "Week planner", "pilot_sample", tier="T0", mode="code",
+                                 reason="sample savings total: Optimiser · OR-Tools planned the 14 days before the plan day (expected, not verified)")
+                    st.rerun()
+                return
+            vals, sample = ss.pilot_sample, True
+        run_tot, acc = [], 0.0
+        for _, v in vals:
+            acc += v
+            run_tot.append(acc)
+        kpis([(rs(acc), "expected so far" if sample else "verified so far", "g"), (str(len(vals)), "days", ""),
+              (rs(acc / max(len(vals), 1) * SITE["working_days_per_year"]), "a year at this rate", "")])
+        fig = go.Figure(go.Scatter(x=[d for d, _ in vals], y=run_tot, mode="lines+markers", line=dict(color=GREEN, width=2.5),
+                                   fill="tozeroy", fillcolor="rgba(46,125,80,0.08)", hovertemplate="%{x}: ₹%{y:,.0f}<extra></extra>"))
+        fig.update_layout(height=200, margin=dict(l=8, r=8, t=8, b=8), plot_bgcolor="#fff", paper_bgcolor="#fff",
+                          yaxis=dict(title="₹ saved, running total", gridcolor="#EEF1F5"), xaxis=dict(showgrid=False))
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key="pilot_chart")
+
+
 def page_check() -> None:
     page_header("Next-day check", "After the day runs, compare the real meter readings with the plan. The agent learns from the gap.")
+    pilot_savings()
     if not ss.approved:
         html(f"<div class='rh-empty'><h2>Nothing to check yet</h2><p>Approve a plan on Today first. After the day, come back here "
              "to see the real saving.</p></div>")
@@ -2948,26 +3059,19 @@ def page_history() -> None:
     page_header("History", "Every step the agents took, which tier did it, and what each decision cost.")
     html("<div class='rh-key'><span><span class='rh-chip t0'>T0</span>plain code, no AI</span><span><span class='rh-chip t1'>T1</span>small AI model</span>"
          "<span><span class='rh-chip t2'>T2</span>large AI model, only when needed</span><span><span class='rh-chip human'>human</span>a person</span></div>")
-    t0, t1, t2 = st.tabs([":material/timeline: This session", ":material/list: This run", ":material/database: All records"])
+    t0, tm, t1, t2 = st.tabs([":material/timeline: This session", ":material/account_tree: Run map", ":material/list: This run", ":material/database: All records"])
     with t0:
         session_timeline()
+    with tm:
+        run_map()
     with t1:
         log_tab()
     with t2:
         audit_tab()
 
 
-def session_timeline() -> None:
-    """Every step of this session in order: each plan run with all its agents and tools, every message, try, offer and memory change."""
-    rows = ss.audit.rows(session=ss.session_id)          # only this browser session's rows, never another visitor's
-    if not rows:
-        html("<div class='rh-note' style='margin:14px 0'>Nothing yet. Generate a plan or talk to the agent.</div>")
-        return
-    runs = list(dict.fromkeys(r["run_id"] for r in rows if any(x["run_id"] == r["run_id"] and x["action"] == "orchestrate" for x in rows)))
-    calls = [r for r in rows if r["tier"] in ("T1", "T2") and r["mode"] == "live API"]
-    kpis([(str(len(runs)), "plan runs", ""), (str(len(calls)), "AI model calls", ""), (f"${sum(r['cost_usd'] for r in rows):.4f}", "AI spend", ""),
-          (str(sum(1 for r in rows if r["agent"] == "Plant manager")), "your actions", ""),
-          (str(sum(1 for r in rows if r["agent"] == "Factory memory" or r["action"] in ("learn_rule", "forget", "one_time_rule"))), "memory changes", "")])
+def _segments(rows: list[dict]) -> list[dict]:
+    """Splits this session's rows into plan runs (with the messages and questions that followed each one)."""
     segs, cur = [], None                  # one block per plan run; messages and questions after a run belong to it
     for r in rows:
         if r["action"] == "orchestrate" and r["run_id"] != cur:
@@ -2982,6 +3086,55 @@ def session_timeline() -> None:
         elif not segs:
             segs.append({"title": "Before the first plan", "ts": r["ts"][11:19], "why": "", "run": False, "rows": []})
         segs[-1]["rows"].append(r)
+    return segs
+
+
+def run_map() -> None:
+    """Each run as a picture: the agents, models and tools in the order they worked, with what each did and cost."""
+    rows = ss.audit.rows(session=ss.session_id)
+    if not rows:
+        html("<div class='rh-note' style='margin:14px 0'>Nothing yet. Generate a plan or talk to the agent.</div>")
+        return
+    rank = {"T2": 3, "T1": 2, "T0": 1, "human": 0}
+    out = ""
+    for i, g in enumerate(reversed(_segments(rows))):
+        boxes: list[dict] = []
+        for r in g["rows"]:
+            if boxes and boxes[-1]["agent"] == r["agent"]:
+                boxes[-1]["rows"].append(r)
+            else:
+                boxes.append({"agent": r["agent"], "rows": [r]})
+        cells = []
+        for bx in boxes:
+            rs_ = bx["rows"]
+            tier = max((r["tier"] for r in rs_), key=lambda t: rank.get(t, 1))
+            acts = list(dict.fromkeys(words(r["action"]) for r in rs_))
+            tools = list(dict.fromkeys(str(r["model"] or ("person" if r["tier"] == "human" else "code")) for r in rs_))
+            cost = sum(r["cost_usd"] or 0 for r in rs_)
+            warn = any(re.search(r"fail|did not answer|not in the facts|kept the usual|no plan", str(r["reason"] or ""), re.I) for r in rs_)
+            cells.append(f"<div class='rm-box {tier.lower()}'>{'<i class=\'rm-dot\' title=\'a step failed or fell back\'></i>' if warn else ''}"
+                         f"<div class='rm-h'>{chip(tier)}<b>{escape(str(bx['agent']))}</b></div>"
+                         f"<div class='rm-a'>{'<br>'.join(escape(x) for x in acts[:3])}{' …' if len(acts) > 3 else ''}</div>"
+                         f"<div class='rm-m'>{escape(', '.join(tools[:2]))}{' · $%.4f' % cost if cost else ''}{f' · ×{len(rs_)}' if len(rs_) > 1 else ''}</div></div>")
+        spend = sum(r["cost_usd"] or 0 for r in g["rows"])
+        out += (f"<details class='rh-run'{' open' if i < 2 else ''}><summary>{ICONS['loop']} <b>{g['title']}</b>{' · latest' if i == 0 else ''}"
+                f"<span>{g['ts']} · {len(boxes)} stages · {len(g['rows'])} steps" + (f" · ${spend:.4f}" if spend else "") + (f" · {g['why']}" if g['why'] else "")
+                + "</span></summary><div class='rm-flow'>" + "<i class='rm-arrow'>→</i>".join(cells) + "</div></details>")
+    html("<div class='rh-note' style='margin:6px 0 4px'>Read left to right: who worked, in order. A red dot means a step failed or fell back to plain code.</div>" + out)
+
+
+def session_timeline() -> None:
+    """Every step of this session in order: each plan run with all its agents and tools, every message, try, offer and memory change."""
+    rows = ss.audit.rows(session=ss.session_id)          # only this browser session's rows, never another visitor's
+    if not rows:
+        html("<div class='rh-note' style='margin:14px 0'>Nothing yet. Generate a plan or talk to the agent.</div>")
+        return
+    runs = list(dict.fromkeys(r["run_id"] for r in rows if any(x["run_id"] == r["run_id"] and x["action"] == "orchestrate" for x in rows)))
+    calls = [r for r in rows if r["tier"] in ("T1", "T2") and r["mode"] == "live API"]
+    kpis([(str(len(runs)), "plan runs", ""), (str(len(calls)), "AI model calls", ""), (f"${sum(r['cost_usd'] for r in rows):.4f}", "AI spend", ""),
+          (str(sum(1 for r in rows if r["agent"] == "Plant manager")), "your actions", ""),
+          (str(sum(1 for r in rows if r["agent"] == "Factory memory" or r["action"] in ("learn_rule", "forget", "one_time_rule"))), "memory changes", "")])
+    segs = _segments(rows)
 
     def line(r: dict) -> str:
         who = r["agent"]
