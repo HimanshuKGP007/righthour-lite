@@ -348,6 +348,16 @@ html, body, .stApp { font-size:14.5px; }
 .st-key-sethits button { justify-content:flex-start; border:0 !important; box-shadow:none !important; background:transparent; min-height:32px; padding:4px 8px; font-weight:500; }
 .st-key-sethits button > div { justify-content:flex-start !important; width:100%; }
 .st-key-sethits button:hover { background:var(--navy-05) !important; }
+/* guardrails screen: one even row per guardrail */
+.st-key-grrows [data-testid="stVerticalBlockBorderWrapper"] { padding:12px 18px !important; }
+.st-key-grrows [data-testid="stMarkdownContainer"] p { margin:0; }
+.gr-n { font-weight:650; font-size:15px; color:var(--navy); line-height:1.3; }
+.gr-s { font-size:12.5px; color:var(--muted); margin-top:3px; }
+.gr-fixed { display:flex; align-items:center; gap:8px; font-size:14px; color:var(--navy); }
+.gr-fixed svg { width:15px; height:15px; color:var(--muted); flex:none; }
+.gr-fixed em { font-style:normal; font-size:11.5px; color:var(--muted); background:var(--navy-05); padding:1px 7px; border-radius:5px; }
+.gr-t { display:flex; justify-content:flex-end; }
+.gr-t .rh-tag svg { width:13px; height:13px; margin-right:4px; }
 /* chat suggestions: small boxes that wrap */
 .st-key-chips button { min-height:28px !important; padding:3px 11px !important; border-radius:14px !important; }
 .st-key-chips button p { font-size:12.5px !important; white-space:nowrap; }

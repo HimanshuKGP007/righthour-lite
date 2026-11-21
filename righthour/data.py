@@ -78,23 +78,69 @@ def load_uci_csv(path, scale: float | None = None) -> pd.DataFrame:
     return df
 
 
-def validate_load(df: pd.DataFrame, spike_x: float = 3.0, pf_min: float = 0.6) -> list[dict]:
-    """Data-quality checks: gaps, negatives, spikes, power-factor range. The two limits can be changed in the Control room."""
+def validate_load(df: pd.DataFrame, spike_x: float = 3.0, pf_min: float = 0.6, max_gap_h: float = 2.0, stuck_h: float = 3.0,
+                  shutdown_pct: float = 0.2, stale_days: int = 7, contract_kva: float | None = None,
+                  plan_date: dt.date | None = None) -> list[dict]:
+    """Data-quality checks before anything is forecast. Each check says what it found and what the agent does about it.
+    Every limit can be changed in the Control room (Check box) or on the Guardrails screen."""
     issues = []
     if df.empty:
         return [{"level": "error", "text": "No meter rows found."}]
-    expected = pd.date_range(df["ts"].min(), df["ts"].max(), freq="15min")
-    missing = len(expected) - df["ts"].nunique()
+    df = df.sort_values("ts")
+    # 1. timestamps: duplicates, off-grid times, gaps
+    dup = int(df["ts"].duplicated().sum())
+    if dup:
+        issues.append({"level": "warning", "text": f"{dup} repeated timestamps (the same 15 minutes twice); the average is used."})
+    off = int(((df["ts"].dt.minute % 15) != 0).sum() + (df["ts"].dt.second != 0).sum())
+    if off:
+        issues.append({"level": "warning", "text": f"{off} readings not on a 15-minute mark; they are moved to the nearest mark."})
+    expected = pd.date_range(df["ts"].min().floor("15min"), df["ts"].max().floor("15min"), freq="15min")
+    missing = len(expected) - df["ts"].dt.floor("15min").nunique()
     if missing > 0:
-        issues.append({"level": "warning", "text": f"{missing} fifteen-minute readings missing; filled by interpolation."})
+        issues.append({"level": "warning", "text": f"{missing} fifteen-minute readings missing; short gaps are filled by interpolation."})
+    gaps = df["ts"].diff().dt.total_seconds().div(3600)
+    if len(gaps) and gaps.max() > max_gap_h:
+        at = df["ts"].iloc[int(gaps.values.argmax())]
+        issues.append({"level": "warning", "text": f"Longest gap {gaps.max():.1f} h, ending {at:%d %b %H:%M} (limit {max_gap_h:g} h). "
+                                                   "Filling it is a guess: check the meter link for that day."})
+    # 2. values: negatives, spikes, stuck meter
     if (df["kw"] < 0).any():
-        issues.append({"level": "error", "text": "Negative load readings (check CT polarity)."})
+        issues.append({"level": "error", "text": f"{int((df['kw'] < 0).sum())} negative load readings (check CT polarity)."})
     # A plant swings from light night load to full day load, so "5x the median" flags normal shifts. A CT-ratio error
     # shows up as readings far above anything the plant normally draws: above 3x its 99th percentile.
     p99 = float(df["kw"].quantile(0.99))
     spikes = int((df["kw"] > spike_x * max(p99, 1)).sum())
     if spikes:
         issues.append({"level": "warning", "text": f"{spikes} readings above {spike_x:g}x the plant's 99th-percentile load (possible CT-ratio error)."})
+    run_len = int(stuck_h * 4)
+    same = df["kw"].round(3).ne(df["kw"].round(3).shift()).cumsum()
+    runs = df.groupby(same)["kw"].agg(["size", "first"])
+    stuck = runs[(runs["size"] >= run_len) & (runs["first"] > 0)]
+    if len(stuck):
+        issues.append({"level": "warning", "text": f"Meter looks stuck {len(stuck)} time(s): the same non-zero value for {stuck_h:g} h or more. "
+                                                   "Those hours may be copied, not measured."})
+    # 3. units: does the size of the load fit the plant's contract?
+    if contract_kva:
+        if p99 > 1.5 * contract_kva:
+            issues.append({"level": "error", "text": f"Top load {p99:,.0f} kW is far above the {contract_kva:,.0f} kVA contract: the file may be in W or kWh per hour, "
+                                                     "or for a bigger site. Check the units."})
+        elif p99 < 0.02 * contract_kva:
+            issues.append({"level": "warning", "text": f"Top load {p99:,.1f} kW is tiny next to the {contract_kva:,.0f} kVA contract: the file may be in MW. Check the units."})
+    # 4. days: shutdowns and holidays, part days
+    day = df.set_index("ts")["kw"].resample("D")
+    energy, n = day.mean(), day.size()
+    full = energy[n >= 90]
+    if len(full) >= 3:
+        wd_med = full.groupby(full.index.dayofweek).transform("median")      # a light Sunday is normal; a light Tuesday is not
+        low = full[full < shutdown_pct * wd_med]
+        if len(low):
+            issues.append({"level": "warning", "text": f"{len(low)} day(s) with under {shutdown_pct:.0%} of a usual day for that weekday (holiday or shutdown?): "
+                                                       + ", ".join(f"{d:%d %b}" for d in low.index[:5]) + (" …" if len(low) > 5 else "")
+                                                       + ". They pull the same-weekday forecast down."})
+    part = int((n[(n > 0) & (n < 90)]).size)
+    if part:
+        issues.append({"level": "warning", "text": f"{part} part day(s) with fewer than 90 of 96 readings; they are not used as a whole day."})
+    # 5. power factor
     bad_pf = (df["pf"] < pf_min) | (df["pf"] > 1.0)
     low_pf = int(bad_pf.sum())
     if low_pf:
@@ -102,8 +148,15 @@ def validate_load(df: pd.DataFrame, spike_x: float = 3.0, pf_min: float = 0.6) -
         where = ", mostly at light load" if light >= 0.7 else ""
         issues.append({"level": "warning", "text": f"{low_pf:,} readings ({low_pf / len(df):.0%}) with power factor outside {pf_min:g} to 1.0"
                                                    f"{where}; kVAh there is less certain."})
+    # 6. freshness: is the newest reading close enough to the day being planned?
+    if plan_date is not None:
+        last = df["ts"].max().date()
+        old = (plan_date - last).days - 1
+        if old > stale_days:
+            issues.append({"level": "warning", "text": f"Newest reading is {old} days before the plan day (limit {stale_days}). "
+                                                       "Recent changes at the plant are not in the forecast."})
     if not issues:
-        issues.append({"level": "ok", "text": f"{len(df):,} readings, no gaps or spikes."})
+        issues.append({"level": "ok", "text": f"{len(df):,} readings: no gaps, spikes, stuck meter, odd days or unit problems."})
     return issues
 
 

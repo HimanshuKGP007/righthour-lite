@@ -1267,6 +1267,10 @@ LIMITS = [
     ("price", "spread_x", "Peak price at least (× solar)", "price", (1.0, 4.0, 0.05, "%.2f"), "The gap that makes moving load worth it."),
     ("check", "spike_x", "Spike above (× the usual top load)", "slider", (1.5, 6.0, 0.5, "%.1f"), "Readings above this are flagged."),
     ("check", "pf_min", "Lowest normal power factor", "slider", (0.3, 0.95, 0.05, "%.2f"), "Readings below this are flagged."),
+    ("check", "max_gap_h", "Longest gap allowed (hours)", "slider", (0.5, 12.0, 0.5, "%.1f"), "A longer gap is flagged: filling it is a guess."),
+    ("check", "stuck_h", "Stuck meter after (hours)", "slider", (1.0, 12.0, 0.5, "%.1f"), "The same value this long is flagged as copied, not measured."),
+    ("check", "shutdown_pct", "Holiday or shutdown below (% of a usual day)", "pct", (5, 60, 5), "Such days are flagged: they pull the forecast down."),
+    ("check", "stale_days", "Newest reading at most (days before the plan day)", "slider", (1, 30, 1, "%d"), "Older data misses recent changes."),
     ("check", "min_history_days", "Days of meter history needed to plan", "slider", (7, 60, 1, "%d"), "Fewer days, a weaker forecast."),
     ("forecast", "method", "Which past days", "radio", (("weekday", "Same weekday"), ("recent", "Last 7 days")), None),
     ("forecast", "weeks", "Weeks of the same weekday", "slider", (1, 8, 1, "%d"), None),
@@ -2628,6 +2632,10 @@ GUARDRAILS = [
     ("Peak at least × solar", "spread_x", "Deck: 1.2 ÷ 0.8 = 1.5×", (), None),
     ("Meter spikes flagged", "spike_x", "Data quality · CEA metering rules", (), None),
     ("Lowest normal power factor", "pf_min", "Data quality · CEA metering rules", (), None),
+    ("Meter gaps flagged", "max_gap_h", "Data quality · your meter link", (), None),
+    ("Stuck meter flagged", "stuck_h", "Data quality · your meter link", (), None),
+    ("Holidays and shutdowns flagged", "shutdown_pct", "Data quality · your plant's calendar", (), None),
+    ("Meter data recent enough", "stale_days", "Data quality · your meter link", (), None),
     ("Small AI tries before the large one", "small_tries", "AI router · deck slide 6", (), None),
     ("Names removed before any AI", "redact_names", "DPDP Act 2023 · deck slide 12", (), None),
     ("A person approves every plan", None, "RightHour design · MeitY AI Guidelines 2025", (), lambda: "always"),
@@ -2641,26 +2649,26 @@ def page_guardrails() -> None:
     update_plan_bar("gr")
     checks = (state.get("policy") or {}).get("checks", []) if run else []
     spec = {x[1]: x for x in LIMITS}
-    head = st.columns([2.2, 2.4, 2.6, 1.1])
-    for c, t in zip(head, ["Guardrail", "Setting", "Comes from", "This run"]):
+    head = st.columns([3, 3.2, 1], vertical_alignment="bottom")
+    for c, t in zip(head, ["Guardrail and where it comes from", "Setting", "This run"]):
         c.markdown(f"<div class='rh-sub' style='margin:4px 0'>{t}</div>", unsafe_allow_html=True)
-    for name, key, src, match, fixed in GUARDRAILS:
-        with st.container(border=True):
-            c1, c2, c3, c4 = st.columns([2.2, 2.4, 2.6, 1.1], vertical_alignment="center")
-            c1.markdown(f"<b>{escape(name)}</b>", unsafe_allow_html=True)
-            with c2:
-                if key in spec:
-                    sp = spec[key]
-                    limit_widget(sp, "gr")
+    with st.container(key="grrows"):
+        for i, (name, key, src, match, fixed) in enumerate(GUARDRAILS):
+            with st.container(border=True, key=f"gr_{i}"):
+                c1, c2, c4 = st.columns([3, 3.2, 1], vertical_alignment="center")
+                c1.markdown(f"<div class='gr-n'>{escape(name)}</div><div class='gr-s'>{escape(src)}</div>", unsafe_allow_html=True)
+                with c2:
+                    if key in spec:
+                        limit_widget(spec[key], "gr")
+                    else:
+                        html(f"<div class='gr-fixed'>{ICONS['lock']}<span>{escape(fixed())}</span><em>fixed</em></div>")
+                hit = [x for x in checks if any(x["rule"].startswith(m) or m in x["rule"] for m in match)] if match else []
+                if not hit:
+                    tag = "<span class='rh-tag'>not checked</span>"
                 else:
-                    html(f"<div class='rh-lockgrid' style='grid-template-columns:1fr;margin:0'><div>{ICONS['lock']}<span>{escape(fixed())}</span></div></div>")
-            c3.markdown(f"<div class='rh-note'>{escape(src)}</div>", unsafe_allow_html=True)
-            hit = [x for x in checks if any(x["rule"].startswith(m) or m in x["rule"] for m in match)] if match else []
-            if not hit:
-                c4.markdown("<span class='rh-tag'>—</span>", unsafe_allow_html=True)
-            else:
-                ok = all(x["ok"] for x in hit)
-                c4.markdown(f"<span class='rh-tag {'ok' if ok else 'ask'}'>{'held' if ok else 'broken'}</span>", unsafe_allow_html=True)
+                    ok = all(x["ok"] for x in hit)
+                    tag = f"<span class='rh-tag {'ok' if ok else 'ask'}'>{ICONS['check' if ok else 'alert']}{'held' if ok else 'broken'}</span>"
+                c4.markdown(f"<div class='gr-t'>{tag}</div>", unsafe_allow_html=True)
 
 
 def page_control_room() -> None:

@@ -171,7 +171,7 @@ BOX_INFO: dict[str, dict] = {
                 "comes_from": ["Today: runs when you press Generate plan, using the loaded file and Setup.",
                                "Live: a scheduled job each evening that pulls meters, plan, prices and weather."],
                 "code": "righthour/agents.py · step_data", "produces": "One bundle of inputs for the day."},
-    "check": {"title": "2 Check", "what": "Flags bad readings: gaps, negative values, odd spikes.",
+    "check": {"title": "2 Check", "what": "Checks the meter file: gaps, repeats, negatives, spikes, a stuck meter, wrong units, holidays, part days, power factor and how recent it is.",
               "comes_from": ["Today: the readings in the loaded meter file.",
                              "Live: the same checks on every new batch of meter readings, with an alert to a person."],
               "code": "righthour/data.py · validate_load", "produces": "A list of data warnings, or 'no gaps or spikes'."},

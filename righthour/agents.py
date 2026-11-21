@@ -319,7 +319,7 @@ def _esc(ctx) -> int:
 
 
 # How each box of the diagram works. The Control room changes these per session; each run records the values it used.
-PROCESS_DEFAULTS = {"weeks": 4, "method": "weekday", "use_learning": True, "solar_on": True, "spike_x": 3.0, "pf_min": 0.6,
+PROCESS_DEFAULTS = {"weeks": 4, "method": "weekday", "use_learning": True, "solar_on": True, "spike_x": 3.0, "pf_min": 0.6, "max_gap_h": 2.0, "stuck_h": 3.0, "shutdown_pct": 0.2, "stale_days": 7,
                     "time_limit_s": 20, "notes_on": True,
                     # guardrails the manager sets: the optimiser obeys them and the rule check enforces them
                     "margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0,
@@ -341,9 +341,10 @@ def step_goal(ctx: Context, st: dict) -> dict:
 def step_data(ctx: Context, st: dict) -> dict:
     steps, agent = st["steps"], "Data & Forecast agent"
     p = {**PROCESS_DEFAULTS, **(ctx.process or {})}
-    issues = D.validate_load(ctx.history, spike_x=p["spike_x"], pf_min=p["pf_min"])
-    ctx.log(steps, agent, "validate_data", detail={"source": ctx.history.attrs.get("source", ""), "issues": issues,
-                                                    "spike_x": p["spike_x"], "pf_min": p["pf_min"]})
+    lim = {k: p[k] for k in ("spike_x", "pf_min", "max_gap_h", "stuck_h", "shutdown_pct", "stale_days")}
+    hist = ctx.history[ctx.history["ts"].dt.date < ctx.plan_date] if ctx.plan_date else ctx.history   # only what the plan may use
+    issues = D.validate_load(hist if len(hist) else ctx.history, contract_kva=ctx.site.get("contract_demand_kva"), plan_date=ctx.plan_date, **lim)
+    ctx.log(steps, agent, "validate_data", detail={"source": ctx.history.attrs.get("source", ""), "issues": issues, **lim})
     bias = ctx.bias if p["use_learning"] else 1.0
     fc = D.forecast_load(ctx.history, bias=bias, target=ctx.plan_date, weeks=p["weeks"], method=p["method"])
     ctx.log(steps, agent, "forecast_load", detail={"method": fc["method"], "for": f"{fc['weekday']} {fc['date']}",
