@@ -29,7 +29,7 @@ from righthour import agents as A
 from righthour.agents import PROCESS_DEFAULTS, Context, lakh, parse_tariff, rs, verify_and_learn
 from righthour.audit import AuditLog
 from righthour.graph import resume, start
-from righthour.llm import KEY_ENV, LABEL, PROVIDERS, LLMClient, default_provider, suggest_models
+from righthour.llm import KEY_ENV, LABEL, PROVIDERS, LLMClient, default_provider, number_guard, numbers_in, suggest_models
 from righthour.router import MODELS, PRICES, cost_usd, set_models, set_provider
 from righthour.tariff import N_SLOTS, PRICE_RULES, SLOTS_PER_HOUR, price_gauges, validate_tariff
 from righthour.theme import (AMBER, AMBER_TEXT, CSS, FONT, GREEN, ICONS, INK, LOGO, MUTED, NAVY, NAVY_10, NAVY_30, NAVY_60, RED,
@@ -2480,14 +2480,23 @@ def ask_answer(q: str) -> str:
         return ASK.offline_answer(q, f)
     model = MODELS[ss.provider]["T2"]
     history = "".join(f"{m['role']}: {m['text']}\n" for m in ss.chat[-6:])
-    try:
-        text, tin, tout = LLM.complete(model, ASK.SYSTEM + "\n\n" + ASK.context_text(f), f"{history}manager: {q}", 700)
-    except Exception as e:  # noqa: BLE001
-        return f"The AI model did not answer ({e}). Here is what plain code can tell you:\n\n" + ASK.offline_answer(q, f)
-    ss.audit.log(ctx.run_id if ctx else "ask", "Ask RightHour", "answer_question", tier="T2", model=model, mode=LLM.mode,
-                 reason="free-form question: large model", tokens_in=tin, tokens_out=tout,
-                 cost_usd=cost_usd(model, tin, tout), detail={"question": q})
-    return text
+    facts = ASK.context_text(f)
+    allowed = numbers_in(facts + " " + q + " " + history) | {str(i) for i in range(25)} | {"00", "15", "30", "45"}   # hours, minutes and small counts are fine
+    sysmsg, bad = ASK.SYSTEM + "\n\n" + facts, []
+    for attempt in (1, 2):                       # every number in the answer must be in the facts; one redo, then plain code
+        try:
+            text, tin, tout = LLM.complete(model, sysmsg, f"{history}manager: {q}", 700)
+        except Exception as e:  # noqa: BLE001
+            return f"The AI model did not answer ({e}). Here is what plain code can tell you:\n\n" + ASK.offline_answer(q, f)
+        bad = number_guard(text.replace(":", " "), allowed)
+        ss.audit.log(ctx.run_id if ctx else "ask", "Ask RightHour", "answer_question", tier="T2", model=model, mode=LLM.mode,
+                     reason="free-form question: large model", tokens_in=tin, tokens_out=tout,
+                     cost_usd=cost_usd(model, tin, tout), detail={"question": q, "attempt": attempt, "number_guard": bad or "passed"})
+        if not bad:
+            return text
+        sysmsg = (ASK.SYSTEM + f"\n\nYour last answer used numbers that are not in the facts ({', '.join(bad[:6])}). "
+                  "Answer again using only numbers that appear in the facts.\n\n" + facts)
+    return ("The AI answer had numbers I could not check, so plain code answers instead:\n\n" + ASK.offline_answer(q, f))
 
 
 ss.setdefault("chat", [])
