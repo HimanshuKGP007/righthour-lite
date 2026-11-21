@@ -854,8 +854,10 @@ def bill(state: dict) -> None:
         left = (f"<div class='cap'>Plan cost for the day</div><div class='rh-big' style='color:{NAVY}'>{rs(plan['total_rs'])}</div>"
                 f"<div class='rh-note'>No like-for-like baseline for this order, so no saving is claimed.</div>")
     pct = lambda v: min(max(v / cd * 100, 0), 100)  # noqa: E731
-    right = (f"<div class='cap'>Max demand against the contract</div>"
-             f"<div class='rh-big' style='color:{NAVY if ok else RED}'>{pk:.0f}<small>kVA, {'within' if ok else 'above'} this month's max</small></div>"
+    right = (f"<div class='cap'>Highest demand tomorrow</div>"
+             f"<div class='rh-big' style='color:{NAVY if ok else RED}'>{pk:.0f}<small>kVA, "
+             + (f"under this month's high of {mtd:.0f}" if ok else f"a new high for the month (was {mtd:.0f}): the demand charge goes up")
+             + (f". Contract limit {cd:.0f}" if pk <= cd else f". Above the contract limit of {cd:.0f}") + "</small></div>"
              f"<div class='rh-meter'><div class='fill' style='width:{pct(pk):.1f}%'></div>"
              f"<div class='tick top' style='left:{pct(mtd):.1f}%'><span style='transform:translateX(-50%)'>month max {mtd}</span></div>"
              f"<div class='tick cd bot' style='left:99.6%'><span style='transform:translateX(-100%)'>contract {cd}</span></div></div>")
@@ -2470,6 +2472,11 @@ def offer_decide(pick: int | None) -> None:
     say("agent", f"Option {pick + 1} is in: {'; '.join(done)}. Planning again, then approve it as usual.")
 
 
+def _why_body(text: str, m: dict) -> str:
+    """why_moved starts some answers with the machine's name; the reply line already shows it."""
+    return text[len(m["name"]):].lstrip(" :") if text.startswith(m["name"]) else text
+
+
 def act_on(text: str) -> None:
     """The agentic loop for one message: propose actions (AI or plain code), check each in code, apply, re-plan, report."""
     if ss.get("offers"):                                          # the agent offered options: "keep the main plan" or "option 2"
@@ -2519,6 +2526,7 @@ def act_on(text: str) -> None:
     if changes:                                   # never change the plan straight away: try it first, then the manager decides
         simulate_and_offer(changes, text, how, bad)
         return
+    why_done: set = set()
     for a in ok:                                                  # actions on the plan that is waiting
         if a["type"] == "approve":
             ss.audit.log(_rid(), "Plant manager", "approve", tier="human", mode="human", reason=text)
@@ -2528,11 +2536,16 @@ def act_on(text: str) -> None:
         elif a["type"] == "relax":
             do_resume(a["option"], echo=False)
         elif a["type"] == "why":
+            if a.get("machine") in why_done:                      # the model and plain code can both ask "why": answer once
+                continue
+            why_done.add(a.get("machine"))
             mv = _moves(st_)
             hit = [(x, h) for x, h in mv if x["id"] == a.get("machine")] if a.get("machine") else mv
-            for x, h in hit:
-                say("agent", A.why_moved(st_["problem"], x, h))
-            if not hit:
+            if hit:                                               # one reply, one line per machine, each line names its machine
+                lines = [f"**{x['name']}** ({A.hhmm(x['baseline_start_h'])} → {A.hhmm(h)}): {_why_body(A.why_moved(st_['problem'], x, h), x)}"
+                         for x, h in hit]
+                say("agent", lines[0] if len(lines) == 1 else "\n".join(lines))
+            else:
                 say("agent", f"{names.get(a.get('machine'), 'That machine')} stays at its usual time: no cheaper hour fits its rules."
                     if a.get("machine") else (st_.get("explanation") or "Generate a plan first."))
         elif a["type"] == "answer":
