@@ -2716,6 +2716,25 @@ def agent_tools(st_: dict, ms: list[dict], spec: dict, waiting: str | None, opti
                 f"(the current plan: ₹{(st_.get('saving_rs') or 0):,.0f}). Moves: {'; '.join(mv) or 'none'}."
                 + (f" Refused: {'; '.join(bad_)}." if bad_ else ""))
 
+    def better_options(_a):
+        """Is there a better move? Every other start for every machine, priced against the plan, plus the offers."""
+        lines = []
+        for m in prob.get("shiftable", []):
+            if m["id"] not in sched:
+                continue
+            b = A.best_other_hour(prob, sched, m)
+            if b["start"] is None:
+                lines.append(f"{m['name']}: no other start inside {m['earliest_h']:02d}:00-{m['latest_finish_h']:02d}:00 lowers the day's cost.")
+            else:
+                stop = ("a crew rule (runs with the " + ", ".join(b["clash"]) + ")" if b["clash"] else "the contract demand" if b["over_contract"]
+                        else "your limits (min saving per move or machines moved)")
+                lines.append(f"{m['name']}: {b['start']:02d}:00 would lower the cost by ₹{b['saving_rs']:,.0f}, but {stop} stops it.")
+        offers = ss.get("offers") or []
+        tail = (" Bigger savings that need a rule or limit changed (the manager decides): "
+                + "; ".join(f"option {i + 1}: {o['label']} (+₹{o['gain']:,.0f}, side cost: {o['side']})" for i, o in enumerate(offers))) if offers else \
+            " No small change of a rule or limit was found that saves more."
+        return "Within every rule and limit the plan is the cheapest the optimiser found. " + " ".join(lines) + tail
+
     def rules(_a):
         names = {m["id"]: m["name"] for m in MACH["shiftable"]}
         crew = [f"{r['text']} ({'hard' if r['hard'] else 'may flex: ' + (r.get('relax_text') or '')})" for r in ss.cfg["machines"]["rules"]]
@@ -2747,6 +2766,7 @@ def agent_tools(st_: dict, ms: list[dict], spec: dict, waiting: str | None, opti
             "why_stayed": ('{"machine": ID or null} why a machine (or every machine that stayed) kept its time', why_stayed),
             "price_move": ('{"machine": ID, "hour": H} what the day costs if that machine starts at hour H instead (rules checked)', price_move),
             "try_change": ('{"actions": [actions]} try changes on a copy of the plan and get the new saving and moves (nothing changes)', try_change),
+            "better_options": ("{} would any other move save more? every other start for every machine, and bigger savings that need a rule changed", better_options),
             "rules": ("{} crew rules, learned rules and guardrail settings", rules),
             "tariff": ("{} price bands, demand charge, contract demand, solar size", tariff),
             "data": ("{} meter data, forecast method and the data checks", data),

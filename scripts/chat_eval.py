@@ -42,6 +42,8 @@ CASES = [
      "expect": "Says the oven is not moving and why (its hours leave no cheaper start)."},
     {"id": "E8", "setup": ["Why these moves?"], "msg": "and the oven?", "state": "none",
      "expect": "Answers about the tempering oven only (why it stays). Does not repeat the other machines."},
+    {"id": "E9", "setup": ["Why these moves?"], "msg": "Would any other move make it save more?", "state": "none",
+     "expect": "Answers yes or no now, with the reason from the facts (other starts priced, what stops them, any bigger saving that needs a rule changed). Must not only promise to check."},
     # status and facts
     {"id": "S1", "msg": "What's the status?", "state": "none",
      "expect": "Says the plan for the day is waiting for approval and gives the saving."},
