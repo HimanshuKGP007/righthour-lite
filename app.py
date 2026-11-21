@@ -75,6 +75,8 @@ ss.setdefault("provider", default_provider())
 ss.setdefault("notes_ver", 0)
 ss.setdefault("sel_box", "orch")
 ss.setdefault("proc", dict(PROCESS_DEFAULTS))
+ss.setdefault("today_rules", [])   # rules from chat that hold for this plan day only, until the manager says "from now on"
+ss.setdefault("confirm_rule", None)
 ss.setdefault("pins", {})      # machines the manager pinned to an hour: {machine id: start hour}   # how each diagram box works; changed in the Control room
 ss.setdefault("scale_mode", True)
 ss.setdefault("live_active", False)       # live mode: the last days of the file are held back and arrive one by one
@@ -204,7 +206,7 @@ if ss.hist is not None:
             ss.w_plan_day, ss.pd_for = _default_day(d_range[1], d_range[2]), tag
         plan_date = ss.w_plan_day
         if ss.get("pins_for") != plan_date:     # kept machines belong to one day
-            ss.pins, ss.pins_for = {}, plan_date
+            ss.pins, ss.pins_for, ss.today_rules, ss.confirm_rule = {}, plan_date, [], None
         has_actuals = D.day_actuals(ss.hist, plan_date) is not None
     except ValueError as e:
         d_err = str(e)
@@ -418,7 +420,7 @@ def on_new_plan(st_: dict, pend: dict | None) -> None:
     prev = ss.prev_plan if ss.prev_plan and ss.prev_plan.get("date") == day else None
     if ss.prev_plan and ss.prev_plan.get("date") != day:
         ss.feed = []
-    cur = {"date": day, "weather": ss.w_weather, "pins": dict(ss.pins), "proc": dict(ss.proc), "cfg": ss.cfg_version,
+    cur = {"date": day, "weather": ss.w_weather, "pins": dict(ss.pins), "today": len(ss.today_rules), "proc": dict(ss.proc), "cfg": ss.cfg_version,
            "rules": len(ss.cfg["machines"].get("learned_rules", [])), "schedule": dict((st_.get("plan") or {}).get("schedule") or {})}
     sav = st_.get("saving_rs")
     if pend and pend.get("type") == "choose_relaxation":
@@ -450,7 +452,7 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
     with st.spinner("Agents working: forecasting, reading the tariff, solving..."):
         try:
             ctx = Context(SITE, ss.tariff, MACH, ss.hist, goal=goal or "Cut tomorrow's bill.", cloudy=WEATHER[weather], plan_date=plan_date,
-                          notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process={**ss.proc, **ASK.parse_goal(goal), "pins": dict(ss.pins)})
+                          notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process={**ss.proc, **ASK.parse_goal(goal), "pins": dict(ss.pins), "today_rules": list(ss.today_rules)})
             graph, cfg, state, pending = start(ctx)
             ss.run = {"ctx": ctx, "graph": graph, "cfg": cfg, "state": state, "pending": pending, "cfg_version": ss.cfg_version,
                       "proc": dict(ss.proc), "price_rules": dict(ss.get("price_rules", PRICE_RULES))}
@@ -1976,8 +1978,37 @@ def action_spec() -> dict:
     return out
 
 
+_ALWAYS = r"\b(always|from now on|every ?day|every time|each day|in future|future|going forward|permanent\w*|never|expect it|lasting|remember)\b"
+_ONCE = r"\b(today|tonight|tomorrow|just this once|this once|this time|one[- ]?time|only once|just once|for now)\b"
+
+
+def _rule_scope(text: str) -> str:
+    """Does the manager mean a lasting rule ("always", "never", "from now on") or this day only? Unsure: ask."""
+    t = text.lower()
+    a, o = re.search(_ALWAYS, t), re.search(_ONCE, t)
+    return "always" if a and not o else "once" if o and not a else "ask"
+
+
+def _confirm_rule_answer(choice: str) -> None:
+    """The manager's answer to "one-time or in future?". From now on: the day's rule moves into factory memory."""
+    lr, ss.confirm_rule = ss.confirm_rule, None
+    names = {m["id"]: m["name"] for m in MACH["shiftable"]}
+    if choice == "always":
+        ss.today_rules = [x for x in ss.today_rules if x is not lr and x != lr]
+        _save_rule_quiet(lr)
+        say("agent", f"Saved in factory memory: {A.learned_rule_text(lr, names)}. Every future plan follows it.")
+    else:
+        ss.audit.log(_rid(), "Plant manager", "one_time_rule", tier="human", mode="human", reason="manager: just this day", detail=lr)
+        say("agent", f"OK, only for this day: {A.learned_rule_text(lr, names)}. I will not use it in future plans.")
+
+
 def act_on(text: str) -> None:
     """The agentic loop for one message: propose actions (AI or plain code), check each in code, apply, re-plan, report."""
+    if ss.confirm_rule:                                           # the agent asked "one-time or in future?"
+        sc = _rule_scope(text)
+        if sc != "ask" or re.match(r"^(just|only|once|no)\b", text.strip().lower()):
+            _confirm_rule_answer("always" if sc == "always" else "once")
+            return
     r = ss.run or {}
     st_, pend = r.get("state") or {}, r.get("pending")
     ms = (st_.get("problem") or {}).get("shiftable") or MACH["shiftable"]
@@ -2018,8 +2049,16 @@ def act_on(text: str) -> None:
             done.append(f"{names[a['machine']]} is free to move again")
         elif t == "rule":
             lr = {"machine": a["machine"], "kind": a["kind"], "hour": a["hour"], "reason": text, "ts": f"{dt.datetime.now():%Y-%m-%d %H:%M}"}
-            _save_rule_quiet(lr)
-            done.append("new rule: " + A.learned_rule_text(lr, names))
+            scope = _rule_scope(text)
+            if scope == "always":
+                _save_rule_quiet(lr)
+                done.append("new rule, from now on: " + A.learned_rule_text(lr, names))
+            else:
+                ss.today_rules = ss.today_rules + [lr]
+                ss.audit.log(_rid(), "Plant manager", "one_time_rule", tier="human", mode="human", reason=text, detail=lr)
+                done.append("for this day only: " + A.learned_rule_text(lr, names))
+                if scope == "ask":
+                    ss.confirm_rule = lr
         elif t == "window":
             cfg = ss.cfg
             sh = [{**m, "earliest_h": a["earliest"], "latest_finish_h": a["latest"]} if m["id"] == a["machine"] else m for m in cfg["machines"]["shiftable"]]
@@ -2043,6 +2082,9 @@ def act_on(text: str) -> None:
         ss.audit.log(_rid(), "Plant manager", "setup_saved", tier="human", mode="human", reason=text, detail={"applied": done, "by": how})
         ss.trigger_plan = True
         say("agent", "Done: " + "; ".join(done) + ". Planning again." + (f" I could not: {'; '.join(bad)}." if bad else ""))
+        if ss.confirm_rule:
+            say("agent", f"Is “{A.learned_rule_text(ss.confirm_rule, names)}” a one-time thing, or should I expect it in future? "
+                         "Answer “just today” or “from now on”.")
         if any(x["type"] == "approve" for x in ok):
             say("agent", "The plan changed, so approve the new one when you are happy with it.")
         return
@@ -2085,6 +2127,8 @@ GOAL_WORDS = {"max_moves": lambda v: "no limit on machines moved" if v is None e
 
 
 def chat_chips() -> list[str]:
+    if ss.get("confirm_rule"):
+        return ["Just today", "From now on"]
     if pending and pending.get("type") == "choose_relaxation":
         return ["Yes, that is fine", "Why?"]
     if pending and pending.get("type") == "approval":
@@ -2107,6 +2151,16 @@ def conversation() -> None:
                              type="primary" if o["id"] == pending.get("recommended") else "secondary"):
                     do_resume(o["id"])
                     st.rerun()
+        # LEARNS: one-time, or a rule for the future?
+        if ss.confirm_rule:
+            html(f"<div class='rh-note'><b>One-time, or in future?</b> {escape(A.learned_rule_text(ss.confirm_rule, {m['id']: m['name'] for m in MACH['shiftable']}))}</div>")
+            c1, c2 = st.columns(2)
+            if c1.button("Just today", key="cv_once", width="stretch", icon=":material/today:"):
+                _confirm_rule_answer("once")
+                st.rerun()
+            if c2.button("From now on", key="cv_always", type="primary", width="stretch", icon=":material/bookmark_add:"):
+                _confirm_rule_answer("always")
+                st.rerun()
         # REJECT: the manager says why
         if ss.get("rejecting") and pending and pending.get("type") == "approval":
             why = st.text_input("Tell the agent why", key="cv_why", placeholder="e.g. The press line needs the night crew.")

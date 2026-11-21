@@ -258,6 +258,7 @@ def build_problem(ctx: Context, st: dict, relax: dict | None = None, drop_rule: 
             if m["id"] == target:
                 m[relax["field"]] = relax["value"]
     apply_learned_rules(ctx.machines_cfg, shiftable)   # every "no" that became a rule
+    apply_learned_rules({"learned_rules": (ctx.process or {}).get("today_rules") or []}, shiftable)   # rules for this day only
     for m in shiftable:                         # machines the manager pinned: they run at exactly that hour
         h = ((ctx.process or {}).get("pins") or {}).get(m["id"])
         if h is not None:
