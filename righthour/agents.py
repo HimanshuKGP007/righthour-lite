@@ -710,6 +710,25 @@ def move_facts(problem: dict, schedule: dict, m: dict) -> dict:
     return f
 
 
+def best_other_hour(problem: dict, schedule: dict, m: dict) -> dict:
+    """For a machine the plan left alone: the best other start inside its window, what it would save, and what blocks it."""
+    from .optimiser import allowed_starts
+    from .tariff import N_SLOTS as _N
+    here = evaluate(problem, schedule)["total_rs"]
+    span = lambda h: {k % _N for k in range(int(h * SLOTS_PER_HOUR), int((h + m["duration_h"]) * SLOTS_PER_HOUR))}  # noqa: E731
+    best = {"start": None, "saving_rs": 0.0, "clash": [], "over_contract": False}
+    for s_ in allowed_starts(m):
+        if s_ == schedule[m["id"]]:
+            continue
+        alt = evaluate(problem, {**schedule, m["id"]: s_})
+        sav = here - alt["total_rs"]
+        if sav > best["saving_rs"] + 0.5:
+            clash = [o["name"] for o in problem["shiftable"] for a_, b_ in problem.get("no_overlap", [])
+                     if o["id"] != m["id"] and {a_, b_} == {m["id"], o["id"]} and span(s_) & span(schedule[o["id"]])]
+            best = {"start": s_, "saving_rs": sav, "clash": clash, "over_contract": alt["peak_kva"] > problem["contract_demand_kva"]}
+    return best
+
+
 def why_moved(problem: dict, m: dict, start: int, schedule: dict | None = None) -> str:
     """Plain-code answer to "why move this machine there?". Every number comes from pricing the day with and without the move."""
     sched = {**{x["id"]: x.get("baseline_start_h") if x.get("baseline_start_h") is not None else x["earliest_h"]
