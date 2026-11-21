@@ -379,6 +379,10 @@ html, body, .stApp { font-size:14.5px; }
 @media (max-width: 760px){ .rh-stepper .s, .rh-stepper .w { display:none; } .rh-stepper .t { font-size:12px; } }
 /* the last block in a bordered box never sits on the box's outline (Streamlit gives markdown a negative bottom margin) */
 [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] > div:last-child [data-testid="stMarkdownContainer"] > div:last-child { margin-bottom:6px; }
+/* top right: start a new session */
+.st-key-newsess { position:fixed; top:9px; right:64px; z-index:999991; width:auto !important; }
+.st-key-newsess button { background:#fff !important; border:1px solid var(--rule) !important; border-radius:8px !important; padding:2px 12px !important; min-height:32px !important; }
+.st-key-newsess button p { font-size:13px !important; }
 /* chat suggestions: small boxes that wrap */
 .st-key-chips button { min-height:28px !important; padding:3px 11px !important; border-radius:14px !important; }
 .st-key-chips button p { font-size:12.5px !important; white-space:nowrap; }

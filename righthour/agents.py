@@ -212,7 +212,7 @@ def parse_note(ctx: Context, note: str, defaults: dict, steps: list) -> dict:
 # ------------------------------------------------------------------ policy checks (T0, governance)
 def policy_check(problem: dict, schedule: dict[str, int], baseline_peak: float | None = None, saving_rs: float | None = None) -> dict:
     """Every rule, checked again in plain code. The manager's guardrails (problem["guard"]) are part of it."""
-    g = {"margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0, **(problem.get("guard") or {})}
+    g = {"margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0, "min_move_rs": 100, **(problem.get("guard") or {})}
     ev = evaluate(problem, schedule)
     checks = []
     for m in problem["shiftable"]:
@@ -267,7 +267,8 @@ def build_problem(ctx: Context, st: dict, relax: dict | None = None, drop_rule: 
         h = ((ctx.process or {}).get("pins") or {}).get(m["id"])
         if h is not None:
             m["earliest_h"], m["latest_finish_h"] = int(h), int(h) + m["duration_h"]
-    no_overlap = [(r["a"], r["b"]) for r in ctx.machines_cfg["rules"] if r["type"] == "no_overlap" and r["id"] != drop_rule]
+    skip = set((ctx.process or {}).get("skip_rules") or [])          # crew rules the manager relaxed for this day only
+    no_overlap = [(r["a"], r["b"]) for r in ctx.machines_cfg["rules"] if r["type"] == "no_overlap" and r["id"] != drop_rule and r["id"] not in skip]
     return {"idle": idle, "holiday": str(day) in set(map(str, hol)),
             "machine_pf_metered": {**PROCESS_DEFAULTS, **(ctx.process or {})}["machine_pf"] == "metered",
             "base_kw": st["forecast"]["kw"], "pf": st["forecast"]["pf"], "pv_kw": st["pv"]["kw"], "fixed": st["fixed"],
@@ -328,11 +329,11 @@ def _esc(ctx) -> int:
 PROCESS_DEFAULTS = {"weeks": 4, "method": "weekday", "use_learning": True, "solar_on": True, "machine_pf": "metered", "spike_x": 3.0, "pf_min": 0.6, "max_gap_h": 2.0, "stuck_h": 3.0, "shutdown_pct": 0.2, "stale_days": 7,
                     "time_limit_s": 20, "notes_on": True,
                     # guardrails the manager sets: the optimiser obeys them and the rule check enforces them
-                    "margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0,
+                    "margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0, "min_move_rs": 100,
                     # learning from the next-day check, the data needed to plan, AI retries, the live feed
                     "learn_rate": 0.5, "learn_step_max": 0.10, "learn_outlier": 0.5, "min_history_days": 14, "small_tries": 2,
                     "live_hold_days": 7, "redact_names": True, "rule_review_days": 90}
-GUARD_KEYS = ("margin_pct", "block_new_peak", "max_moves", "min_saving_rs")
+GUARD_KEYS = ("margin_pct", "block_new_peak", "max_moves", "min_saving_rs", "min_move_rs")
 
 
 def step_goal(ctx: Context, st: dict) -> dict:

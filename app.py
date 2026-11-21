@@ -143,7 +143,9 @@ ss.setdefault("sel_box", "orch")
 ss.setdefault("proc", dict(PROCESS_DEFAULTS))
 ss.setdefault("today_rules", [])   # rules from chat that hold for this plan day only, until the manager says "from now on"
 ss.setdefault("confirm_rule", None)
-ss.setdefault("whatif", None)       # a change the agent tried but the manager has not yet set as the plan
+ss.setdefault("whatif", None)
+ss.setdefault("offers", [])         # bigger savings the agent found one small change away, waiting for the manager
+ss.setdefault("today_skip", [])     # crew rules relaxed for this day only       # a change the agent tried but the manager has not yet set as the plan
 ss.setdefault("pins", {})
 persist()      # machines the manager pinned to an hour: {machine id: start hour}   # how each diagram box works; changed in the Control room
 ss.setdefault("scale_mode", True)
@@ -274,7 +276,7 @@ if ss.hist is not None:
             ss.w_plan_day, ss.pd_for = _default_day(d_range[1], d_range[2]), tag
         plan_date = ss.w_plan_day
         if ss.get("pins_for") != plan_date:     # kept machines belong to one day
-            ss.pins, ss.pins_for, ss.today_rules, ss.confirm_rule = {}, plan_date, [], None
+            ss.pins, ss.pins_for, ss.today_rules, ss.confirm_rule, ss.today_skip = {}, plan_date, [], None, []
         has_actuals = D.day_actuals(ss.hist, plan_date) is not None
     except ValueError as e:
         d_err = str(e)
@@ -531,7 +533,7 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
     with st.spinner("Agents working: forecasting, reading the tariff, solving..."):
         try:
             ctx = Context(SITE, ss.tariff, MACH, ss.hist, goal=goal or "Cut tomorrow's bill.", cloudy=WEATHER[weather], plan_date=plan_date,
-                          notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process={**ss.proc, **ASK.parse_goal(goal), "pins": dict(ss.pins), "today_rules": list(ss.today_rules)})
+                          notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process={**ss.proc, **ASK.parse_goal(goal), "pins": dict(ss.pins), "today_rules": list(ss.today_rules), "skip_rules": list(ss.get("today_skip", []))})
             graph, cfg, state, pending = start(ctx)
             ss.whatif, ss.show_why, ss.open_change = None, False, False
             ss.run = {"ctx": ctx, "graph": graph, "cfg": cfg, "state": state, "pending": pending, "cfg_version": ss.cfg_version,
@@ -1276,6 +1278,7 @@ def _flow(eid: str) -> list[tuple[str, str]]:
 # ---- every rule and limit in the system, in one list. Each box shows its own; "All rules and limits" shows them all.
 # (box, key, label, kind, options, help). kind: slider | pct | toggle | money | radio | optint | price
 LIMITS = [
+    ("guard", "min_move_rs", "Smallest saving to move one machine (₹ a day)", "money", (0, 100000, 50), "A machine keeps its usual time unless moving it saves at least this."),
     ("opt", "machine_pf", "Machines' power factor", "radio", [("metered", "The day's meter reading"), ("unity", "Taken as 1 (deck example)")],
      "The bill is in kVAh. With the meter's power factor, a machine costs more in hours when the plant's power factor is low."),
     ("guard", "margin_pct", "Safety margin under the contract demand (%)", "slider", (0, 20, 1, "%d"), "The plan must stay this far under the contract."),
@@ -2227,7 +2230,7 @@ def _confirm_rule_answer(choice: str) -> None:
         say("agent", f"OK, only for this day: {A.learned_rule_text(lr, names)}. I will not use it in future plans.")
 
 
-_WHATIF_KEYS = ("proc", "price_rules", "pins", "today_rules", "w_weather", "w_goal", "notes_rows", "notes_ver", "cfg", "cfg_version", "confirm_rule")
+_WHATIF_KEYS = ("today_skip", "proc", "price_rules", "pins", "today_rules", "w_weather", "w_goal", "notes_rows", "notes_ver", "cfg", "cfg_version", "confirm_rule")
 
 
 def _apply(acts: list[dict], text: str, sim: bool = False) -> list[str]:
@@ -2275,6 +2278,10 @@ def _apply(acts: list[dict], text: str, sim: bool = False) -> list[str]:
                 save_plant_file(cfg)
                 ss.cfg_version += 1
             done.append(f"{names[a['machine']]} may run {a['earliest']:02d}:00 to {a['latest']:02d}:00")
+        elif t == "skip_rule":
+            ss.today_skip = sorted(set(ss.get("today_skip", [])) | {a["rule"]})
+            r_ = next((r for r in ss.cfg["machines"]["rules"] if r["id"] == a["rule"]), {})
+            done.append(f"for this day only: {(r_.get('relax_text') or r_.get('text') or a['rule']).lower()}")
         elif t == "weather":
             ss.w_weather = a["value"]
             done.append(f"weather: {a['value'].lower()}")
@@ -2300,21 +2307,32 @@ def _plan_summary(st_: dict) -> dict:
 def simulate_and_offer(acts: list[dict], text: str, how: str, bad: list[str]) -> None:
     """The what-if: apply the change to a copy of the inputs, run the whole agent pipeline on it, show the result, then undo.
     The manager then presses Set as plan (or says yes) to make it the plan."""
+    done, new = _try(acts, text)
+    _offer_whatif(acts, text, how, bad, done, new)
+
+
+def _try(acts: list[dict], text: str) -> tuple[list[str], dict]:
+    """Runs the whole agent pipeline on a copy of the inputs with these actions, then puts everything back."""
     snap = {k: json.loads(json.dumps(ss[k], default=str)) if k in ("cfg", "proc", "notes_rows") else ss.get(k) for k in _WHATIF_KEYS}
+    done = []
     try:
         done = _apply(acts, text, sim=True)
         wgoal = ss.get("w_goal") or goal
         ctx_ = Context(ss.cfg["site"], ss.tariff, ss.cfg["machines"], ss.hist, goal=wgoal or "Cut tomorrow's bill.",
                        cloudy=WEATHER[ss.w_weather], plan_date=plan_date, notes=notes_for_run(), bias=ss.bias,
                        llm=LLMClient("Offline"), audit=AuditLog(":memory:"),
-                       process={**ss.proc, **ASK.parse_goal(wgoal), "pins": dict(ss.pins), "today_rules": list(ss.today_rules)})
+                       process={**ss.proc, **ASK.parse_goal(wgoal), "pins": dict(ss.pins), "today_rules": list(ss.today_rules), "skip_rules": list(ss.get("today_skip", []))})
         _, _, st_new, pend_new = start(ctx_)
         new = _plan_summary(st_new)
     except Exception as e:  # noqa: BLE001
-        new, done = {"error": str(e)}, done if "done" in locals() else []
+        new = {"error": str(e)}
     finally:
         for k, v in snap.items():
             ss[k] = v
+    return done, new
+
+
+def _offer_whatif(acts: list[dict], text: str, how: str, bad: list[str], done: list[str], new: dict) -> None:
     old = _plan_summary((ss.run or {}).get("state") or {})
     ss.whatif = {"acts": acts, "text": text, "done": done, "new": new}
     ss.audit.log(_rid(), "Orchestrator", "what_if", tier="T0", mode="code", reason=text,
@@ -2358,8 +2376,82 @@ def whatif_decide(keep: bool) -> None:
                      "Answer “just today” or “from now on”.")
 
 
+def offer_candidates() -> list[tuple[str, list[dict], str]]:
+    """Small changes worth trying after a plan: loosen a limit the manager set, or relax a crew rule that may flex."""
+    p, out = ss.proc, []
+    if p.get("max_moves") is not None:
+        out.append((f"move up to {p['max_moves'] + 1} machines instead of {p['max_moves']}", [{"type": "set", "key": "max_moves", "value": p["max_moves"] + 1}], "one more machine changes time"))
+        out.append(("lift the limit on machines moved", [{"type": "set", "key": "max_moves", "value": None}], "more machines change time"))
+    if p.get("margin_pct"):
+        half = int(p["margin_pct"]) // 2
+        out.append((f"keep a {half}% margin under the contract instead of {p['margin_pct']}%", [{"type": "set", "key": "margin_pct", "value": half}], "less headroom on the grid"))
+    if p.get("block_new_peak"):
+        out.append(("allow a new monthly peak, paying its demand charge", [{"type": "set", "key": "block_new_peak", "value": False}], "the demand charge is counted in the saving"))
+    if p.get("min_saving_rs"):
+        out.append(("drop the smallest-saving rule", [{"type": "set", "key": "min_saving_rs", "value": 0}], "changes are made for any saving"))
+    for r in ss.cfg["machines"]["rules"]:
+        if r.get("type") == "no_overlap" and not r.get("hard") and r["id"] not in ss.get("today_skip", []):
+            out.append(((r.get("relax_text") or f"relax: {r['text']}") + ", today only", [{"type": "skip_rule", "rule": r["id"]}], r.get("side_cost_note") or "a side cost"))
+    return out
+
+
+def find_offers() -> None:
+    """The agent looks for a bigger saving one small change away, and offers it. Nothing changes until the manager picks one."""
+    r = ss.run or {}
+    st_ = r.get("state") or {}
+    rid = getattr(r.get("ctx"), "run_id", None)
+    if not rid or ss.get("offers_for") == rid:
+        return
+    ss.offers_for, ss.offers = rid, []
+    if not (st_.get("status") in ("awaiting_approval", "fallback")):
+        return
+    cur = st_.get("saving_rs") or 0 if st_.get("status") != "fallback" else 0
+    found = []
+    for label, acts, side in offer_candidates()[:5]:
+        _, new = _try(acts, label)
+        if "error" in new or new.get("status") == "fallback":
+            continue
+        gain = (new.get("saving") or 0) - cur
+        if gain >= max(100, 0.03 * max(cur, 1)):
+            found.append({"label": label, "acts": acts, "side": side, "saving": new["saving"], "gain": gain})
+    found = sorted(found, key=lambda x: -x["gain"])
+    found = [f for i, f in enumerate(found) if all(abs(f["saving"] - g["saving"]) > 1 for g in found[:i])][:2]   # two different savings
+    if not found:
+        return
+    ss.offers = found
+    lines = [f"I also found a bigger saving, one small change away:"]
+    for i, f in enumerate(found, 1):
+        lines.append(f"**Option {i}:** {f['label']}. Saving {rs(cur)} → **{rs(f['saving'])}** (+{rs(f['gain'])}). Side effect: {f['side']}.")
+    lines.append("Keep the main plan, or pick an option.")
+    say("agent", "\n".join(lines))
+    ss.audit.log(rid, "Orchestrator", "offer_options", tier="T0", mode="code", reason="a bigger saving one small change away",
+                 detail={"current": cur, "options": [{k: f[k] for k in ("label", "saving", "gain")} for f in found]})
+
+
+def offer_decide(pick: int | None) -> None:
+    offers, ss.offers = ss.get("offers") or [], []
+    if pick is None or pick >= len(offers):
+        ss.audit.log(_rid(), "Plant manager", "offer_declined", tier="human", mode="human", reason="keep the main plan")
+        say("agent", "OK, the main plan stays.")
+        return
+    f = offers[pick]
+    done = _apply(f["acts"], f["label"])
+    ss.audit.log(_rid(), "Plant manager", "setup_saved", tier="human", mode="human", reason=f"option {pick + 1}: {f['label']}", detail={"applied": done, "via": "agent's offer"})
+    ss.trigger_plan = True
+    say("agent", f"Option {pick + 1} is in: {'; '.join(done)}. Planning again, then approve it as usual.")
+
+
 def act_on(text: str) -> None:
     """The agentic loop for one message: propose actions (AI or plain code), check each in code, apply, re-plan, report."""
+    if ss.get("offers"):                                          # the agent offered options: "keep the main plan" or "option 2"
+        t0 = text.strip().lower()
+        m_ = re.search(r"\boption\s*(\d)\b|^(?:use|yes,? use|pick|take)\s*(?:option\s*)?(\d)\b", t0)
+        if m_:
+            offer_decide(int(m_.group(1) or m_.group(2)) - 1)
+            return
+        if re.match(r"^(keep|no\b|nope|main plan|as is|leave it)", t0):
+            offer_decide(None)
+            return
     if ss.get("whatif"):                                          # the agent showed a what-if: yes sets it, no discards it
         t0 = text.strip().lower()
         if re.match(r"^(yes|ok|okay|set|do it|apply|go ahead|use it|sure|fine)\b", t0):
@@ -2437,6 +2529,8 @@ GOAL_WORDS = {"max_moves": lambda v: "no limit on machines moved" if v is None e
 
 
 def chat_chips() -> list[str]:
+    if ss.get("offers"):
+        return ["Keep the main plan"] + [f"Use option {i}" for i in range(1, len(ss.offers) + 1)]
     if ss.get("whatif"):
         return ["Why?"]
     if ss.get("confirm_rule"):
@@ -2462,6 +2556,16 @@ def conversation() -> None:
                 if st.button(f"Yes: {o['text']}", key=f"cv_relax_{o['id']}", width="stretch",
                              type="primary" if o["id"] == pending.get("recommended") else "secondary"):
                     do_resume(o["id"])
+                    st.rerun()
+        # OFFERS: a bigger saving one small change away; the manager decides
+        if ss.get("offers") and not ss.get("whatif"):
+            cols = st.columns(len(ss.offers) + 1)
+            if cols[0].button("Keep the main plan", key="of_keep", width="stretch"):
+                offer_decide(None)
+                st.rerun()
+            for i, f in enumerate(ss.offers):
+                if cols[i + 1].button(f"Option {i + 1}: +{rs(f['gain'])}", key=f"of_{i}", type="primary" if i == 0 else "secondary", width="stretch"):
+                    offer_decide(i)
                     st.rerun()
         # WHAT-IF: the change was tried; the manager decides
         if ss.get("whatif"):
@@ -2665,6 +2769,7 @@ GUARDRAILS = [
     ("Peak at least × solar", "spread_x", "Deck: 1.2 ÷ 0.8 = 1.5×", (), None),
     ("Meter spikes flagged", "spike_x", "Data quality · CEA metering rules", (), None),
     ("Lowest normal power factor", "pf_min", "Data quality · CEA metering rules", (), None),
+    ("Each move worth making", "min_move_rs", "You · no machine moves for a few rupees", (), None),
     ("Meter gaps flagged", "max_gap_h", "Data quality · your meter link", (), None),
     ("Stuck meter flagged", "stuck_h", "Data quality · your meter link", (), None),
     ("Holidays and shutdowns flagged", "shutdown_pct", "Data quality · your plant's calendar", (), None),
@@ -2886,7 +2991,23 @@ def setup_dialog() -> None:
         st.rerun()
 
 
+def new_session() -> None:
+    """Top-right refresh: a clean start (chat, today's choices, plan), keeping the sign-in, the AI setup and the plant's memory."""
+    keep = {k: ss[k] for k in list(ss.keys()) if str(k).startswith(("key_", "m_T")) or k in
+            ("plant", "token", "plant_name", "setup_done", "setup_checked", "w_provider", "models", "model_ok")}
+    for k in list(ss.keys()):
+        del ss[k]
+    for k, v in keep.items():
+        ss[k] = v
+
+
 # ------------------------------------------------------------------ draw
+with st.container(key="newsess"):
+    st.button("New session", icon=":material/refresh:", key="newsess_btn", on_click=new_session, type="tertiary",
+              help="Start fresh: a new chat and a new plan. Your sign-in, AI setup and plant memory stay.")
+if ss.get("run") and ss.get("offers_for") != getattr(ss.run.get("ctx"), "run_id", None):
+    with st.spinner("Looking for a bigger saving one small change away..."):
+        find_offers()
 if not ss.get("setup_done"):
     setup_dialog()
 sidebar()

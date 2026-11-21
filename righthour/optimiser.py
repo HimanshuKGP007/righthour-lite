@@ -44,9 +44,10 @@ def evaluate(problem: dict, schedule: dict[str, int]) -> dict:
     return b
 
 
-def _tie(m: dict, s: int) -> float:
+def _tie(m: dict, s: int, min_move_rs: float = 0.0) -> float:
+    """Steers the choice, never counted in the bill: a machine moves only if that saves at least min_move_rs."""
     b = m.get("baseline_start_h")
-    pen = 0.0 if (b is not None and s == b) else MOVE_PENALTY_RS
+    pen = 0.0 if (b is not None and s == b) else max(MOVE_PENALTY_RS, min_move_rs if b is not None else 0.0)
     return pen + CENTRE_PENALTY_RS_PER_H * abs(s + m["duration_h"] / 2 - SOLAR_CENTRE_H)
 
 
@@ -107,7 +108,7 @@ def optimise_schedule(problem: dict, time_limit_s: int = 20) -> dict:
                 solver.Add(cover(by_id[a], k) + cover(by_id[b], k) <= 1)
 
     energy = sum(rates[k] * DT_H * mimp[k] for k in range(N_SLOTS))
-    tie = sum(_tie(m, s) * x[m["id"], s] for m in machines for s in allowed_starts(m))
+    tie = sum(_tie(m, s, float(g.get("min_move_rs") or 0)) * x[m["id"], s] for m in machines for s in allowed_starts(m))
     solver.Minimize(energy + dc * extra + tie)
 
     status = solver.Solve()
