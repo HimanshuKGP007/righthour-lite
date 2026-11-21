@@ -388,6 +388,14 @@ html, body, .stApp { font-size:14.5px; }
 .rh-tl tr.sep svg { width:14px; height:14px; vertical-align:-2px; }
 .rh-tl tr.you td { background:#FFFBF0; } .rh-tl tr.mem td { background:#F1F8F3; }
 .rh-tl .rh-note { font-size:12.5px; margin-top:2px; }
+details.rh-run { border:1px solid var(--rule); border-radius:10px; margin:10px 0; background:#fff; overflow:hidden; }
+details.rh-run > summary { cursor:pointer; padding:10px 14px; background:var(--navy-05); color:var(--navy); font-size:14px; list-style:none; }
+details.rh-run > summary::-webkit-details-marker { display:none; }
+details.rh-run > summary::before { content:"▸"; display:inline-block; width:14px; transition:transform .15s; }
+details.rh-run[open] > summary::before { transform:rotate(90deg); }
+details.rh-run > summary svg { width:14px; height:14px; vertical-align:-2px; }
+details.rh-run > summary span { display:block; margin:2px 0 0 14px; font-size:12.5px; color:var(--muted); }
+details.rh-run table.rh-tl { margin:0; }
 /* chat suggestions: small boxes that wrap */
 .st-key-chips button { min-height:28px !important; padding:3px 11px !important; border-radius:14px !important; }
 .st-key-chips button p { font-size:12.5px !important; white-space:nowrap; }

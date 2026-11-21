@@ -597,8 +597,8 @@ def step_action(ctx: Context, st: dict) -> dict:
         sched = {m["name"]: f"{st['plan']['schedule'][m['id']]:02d}:00" for m in st["problem"]["shiftable"]}
         js, model, toks = _json_call(ctx, "governance_review", "You are the governance agent of a factory power planner. You look for conflicts a rule engine cannot see.",
                                      f"The manager's notes and reasons: {words_}\nPlanned start times: {sched}\n"
-                                     'Return {"concerns": [up to 3 short plain sentences about a real conflict between the notes and the plan; empty if none]}.', 400)
-        concerns = [str(c)[:200] for c in (js or {}).get("concerns", [])][:3] if js else []
+                                     'Return {"concerns": [up to 3 plain sentences of at most 30 words, each about a real conflict between the notes and the plan; empty if none]}.', 500)
+        concerns = [str(c).strip() for c in (js or {}).get("concerns", []) if str(c).strip()][:3] if js else []
         pol = {**pol, "review": concerns}
         ctx.log(st["steps"], "Governance agent", "governance_review", tier=("T2" if model == tier_model("T2") else "T1") if js else "T0", model=model if js else "",
                 mode="live API" if js else "code", tokens=toks,

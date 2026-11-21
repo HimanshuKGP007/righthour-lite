@@ -1456,7 +1456,8 @@ ACTION_WORDS = {"validate_data": "Checked the meter readings", "forecast_load": 
                 "data_review": "Decided how to treat odd data", "governance_review": "Read your notes against the plan", "chat": "Message to the agent",
                 "what_if": "Tried a change first", "what_if_discarded": "Discarded a tried change", "offer_options": "Offered a bigger saving",
                 "offer_declined": "Kept the main plan", "one_time_rule": "Rule for this day only", "forget": "Forgot from memory",
-                "memory_saved": "Saved to factory memory"}
+                "memory_saved": "Saved to factory memory", "ask_question": "Question to Ask RightHour",
+                "answered": "Answered your question"}
 TIER_WORDS = {"T0": "Plain code", "T1": "Small AI model", "T2": "Large AI model", "human": "A person"}
 
 
@@ -2909,21 +2910,39 @@ def session_timeline() -> None:
     kpis([(str(len(runs)), "plan runs", ""), (str(len(calls)), "AI model calls", ""), (f"${sum(r['cost_usd'] for r in rows):.4f}", "AI spend", ""),
           (str(sum(1 for r in rows if r["agent"] == "Plant manager")), "your actions", ""),
           (str(sum(1 for r in rows if r["agent"] == "Factory memory" or r["action"] in ("learn_rule", "forget", "one_time_rule"))), "memory changes", "")])
-    body, cur, n = "", None, 0
+    segs, cur = [], None                  # one block per plan run; messages and questions after a run belong to it
     for r in rows:
         if r["action"] == "orchestrate" and r["run_id"] != cur:
-            cur, n = r["run_id"], n + 1
-            prev = [x for x in rows if x["ts"] <= r["ts"] and x["agent"] == "Plant manager" and x["run_id"] != r["run_id"]]
-            why = f"after: {escape(words(prev[-1]['action']).lower())}" + (f" “{escape(str(prev[-1]['reason'])[:70])}”" if prev[-1]["action"] == "chat" else "") if prev else "first plan of the session"
-            body += f"<tr class='sep'><td colspan='6'>{ICONS['loop']} <b>Plan run {n}</b> · {r['ts'][11:19]} · {why}</td></tr>"
+            cur = r["run_id"]
+            since = next((g["start"] for g in reversed(segs) if g["run"]), "")
+            prev = [x for x in rows if since < x["ts"] <= r["ts"] and x["agent"] == "Plant manager" and x["run_id"] != r["run_id"]
+                    and x["action"] != "ask_question" and not str(x["reason"] or "").rstrip().endswith("?")]   # a question never re-plans
+            why = (f"after: {escape(words(prev[-1]['action']).lower())}"
+                   + (f" “{escape(str(prev[-1]['reason']))}”" if prev[-1]["action"] in ("chat", "ask_question") else "")) if prev else \
+                ("re-planned: the date, weather or a setting changed" if since else "first plan of the session")
+            segs.append({"title": f"Plan run {len([g for g in segs if g['run']]) + 1}", "ts": r["ts"][11:19], "why": why, "run": True, "rows": [], "start": r["ts"]})
+        elif not segs:
+            segs.append({"title": "Before the first plan", "ts": r["ts"][11:19], "why": "", "run": False, "rows": []})
+        segs[-1]["rows"].append(r)
+
+    def line(r: dict) -> str:
         who = r["agent"]
         cls = "mem" if who == "Factory memory" or r["action"] in ("learn_rule", "forget", "one_time_rule") else ("you" if who == "Plant manager" else "")
-        body += (f"<tr class='{cls}'><td class='m'>{r['ts'][11:19]}</td><td>{chip(r['tier'])}</td><td>{escape(str(who))}</td>"
-                 f"<td><b>{escape(words(r['action']))}</b><div class='rh-note'>{escape(str(r['reason'])[:220])}</div></td>"
-                 f"<td>{escape(str(r['model'] or ('person' if r['tier'] == 'human' else 'code')))}</td>"
-                 f"<td class='r'>{'$%.4f' % r['cost_usd'] if r['cost_usd'] else ''}</td></tr>")
-    html("<table class='rh-log rh-tl'><thead><tr><th>Time</th><th>Tier</th><th>Who</th><th>What happened, and why</th><th>Model or tool</th>"
-         f"<th class='r'>Cost</th></tr></thead><tbody>{body}</tbody></table>")
+        return (f"<tr class='{cls}'><td class='m'>{r['ts'][11:19]}</td><td>{chip(r['tier'])}</td><td>{escape(str(who))}</td>"
+                f"<td><b>{escape(words(r['action']))}</b><div class='rh-note'>{escape(str(r['reason'] or ''))}</div></td>"
+                f"<td>{escape(str(r['model'] or ('person' if r['tier'] == 'human' else 'code')))}</td>"
+                f"<td class='r'>{'$%.4f' % r['cost_usd'] if r['cost_usd'] else ''}</td></tr>")
+
+    head = ("<table class='rh-log rh-tl'><thead><tr><th>Time</th><th>Tier</th><th>Who</th><th>What happened, and why</th><th>Model or tool</th>"
+            "<th class='r'>Cost</th></tr></thead><tbody>")
+    out = ""
+    for i, g in enumerate(reversed(segs)):                   # newest run on top; inside a run, the newest step on top
+        spend = sum(r["cost_usd"] or 0 for r in g["rows"])
+        meta = f"{g['ts']} · {len(g['rows'])} steps" + (f" · ${spend:.4f}" if spend else "") + (f" · {g['why']}" if g["why"] else "")
+        out += (f"<details class='rh-run'{' open' if i == 0 else ''}><summary>{ICONS['loop']} <b>{g['title']}</b>"
+                f"{' · latest' if i == 0 else ''}<span>{meta}</span></summary>"
+                + head + "".join(line(r) for r in reversed(g["rows"])) + "</tbody></table></details>")
+    html(out)
 
 
 # ------------------------------------------------------------------ Ask RightHour: one assistant with every fact on screen
@@ -2975,12 +2994,20 @@ def ask_facts() -> dict:
             "decisions": "\n".join(dec), "steps": "\n".join(steps)}
 
 
+def _ask_log(q: str, answer: str, how: str) -> None:
+    """History: what the manager asked, how it was answered and why."""
+    ss.audit.log(ctx.run_id if ctx else "ask", "Ask RightHour", "answered", tier="T0", mode="code",
+                 reason=f"Q: “{q}” · {how}. A: {answer}", detail={"question": q, "how": how})
+
+
 def ask_answer(q: str) -> str:
     f = ask_facts()
     if ss.proc.get("redact_names", True):          # names removed before any AI sees the data (deck slide 12)
         f["plant"] = "the plant"
     if not LLM.live:
-        return ASK.offline_answer(q, f)
+        a = ASK.offline_answer(q, f)
+        _ask_log(q, a, "plain code answered from the facts on screen (no AI model is set up)")
+        return a
     model = MODELS[ss.provider]["T2"]
     history = "".join(f"{m['role']}: {m['text']}\n" for m in ss.chat[-6:])
     facts = ASK.context_text(f)
@@ -2990,16 +3017,21 @@ def ask_answer(q: str) -> str:
         try:
             text, tin, tout = LLM.complete(model, sysmsg, f"{history}manager: {q}", 700)
         except Exception as e:  # noqa: BLE001
-            return f"The AI model did not answer ({e}). Here is what plain code can tell you:\n\n" + ASK.offline_answer(q, f)
+            a = f"The AI model did not answer ({e}). Here is what plain code can tell you:\n\n" + ASK.offline_answer(q, f)
+            _ask_log(q, a, "the AI model did not answer, so plain code answered from the facts")
+            return a
         bad = number_guard(text.replace(":", " "), allowed) + (["the answer is cut short"] if len(text.strip()) < 20 else [])
         ss.audit.log(ctx.run_id if ctx else "ask", "Ask RightHour", "answer_question", tier="T2", model=model, mode=LLM.mode,
                      reason="free-form question: large model", tokens_in=tin, tokens_out=tout,
                      cost_usd=cost_usd(model, tin, tout), detail={"question": q, "attempt": attempt, "number_guard": bad or "passed"})
         if not bad:
+            _ask_log(q, text, f"the large model answered; every number in it matches the facts on screen" + (" (second try)" if attempt == 2 else ""))
             return text
         sysmsg = (ASK.SYSTEM + f"\n\nYour last answer used numbers that are not in the facts ({', '.join(bad[:6])}). "
                   "Answer again using only numbers that appear in the facts.\n\n" + facts)
-    return ("The AI answer had numbers I could not check, so plain code answers instead:\n\n" + ASK.offline_answer(q, f))
+    a = "The AI answer had numbers I could not check, so plain code answers instead:\n\n" + ASK.offline_answer(q, f)
+    _ask_log(q, a, f"the AI answer twice used numbers not in the facts ({', '.join(bad[:4])}), so plain code answered")
+    return a
 
 
 ss.setdefault("chat", [])
@@ -3037,6 +3069,7 @@ def ask_dialog() -> None:
             with st.chat_message("user", avatar=":material/person:"):
                 st.markdown(q)
             with st.chat_message("assistant", avatar=":material/bolt:"), st.spinner("Thinking..."):
+                ss.audit.log(_rid(), "Plant manager", "ask_question", tier="human", mode="human", reason=q)
                 a = ask_answer(q)
                 st.markdown(a)
         ss.chat += [{"role": "manager", "text": q}, {"role": "assistant", "text": a}]
