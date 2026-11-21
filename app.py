@@ -524,6 +524,8 @@ def on_new_plan(st_: dict, pend: dict | None) -> None:
 
 # the first visit runs the plan on its own, so the whole flow is visible without a single click
 run_error = None
+if ss.run and ss.run.get("inputs") != (plan_date, goal, weather):   # a new day, goal or weather: plan again, never show an old plan
+    ss.trigger_plan = True
 if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and plan_date is not None and ss.get("setup_done"):
     ss.autoran, ss.trigger_plan = True, False
     with st.spinner("Agents working: forecasting, reading the tariff, solving..."):
@@ -531,7 +533,9 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
             ctx = Context(SITE, ss.tariff, MACH, ss.hist, goal=goal or "Cut tomorrow's bill.", cloudy=WEATHER[weather], plan_date=plan_date,
                           notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process={**ss.proc, **ASK.parse_goal(goal), "pins": dict(ss.pins), "today_rules": list(ss.today_rules)})
             graph, cfg, state, pending = start(ctx)
+            ss.whatif, ss.show_why, ss.open_change = None, False, False
             ss.run = {"ctx": ctx, "graph": graph, "cfg": cfg, "state": state, "pending": pending, "cfg_version": ss.cfg_version,
+                      "inputs": (plan_date, goal, weather),
                       "proc": dict(ss.proc), "price_rules": dict(ss.get("price_rules", PRICE_RULES))}
             on_new_plan(state, pending)
             ss.verify = None if not (ss.approved and ss.verify and ss.verify.get("_run") == ctx.run_id) else ss.verify
