@@ -2844,7 +2844,8 @@ def act_on(text: str) -> None:
         res = chat_agent(text, st_, pend, ms, spec, waiting, options)
         if res is not None:
             acts, how, agent_spoke = res["actions"], "chat agent", True
-            if res["reply"]:
+            decisions_only = acts and all(a.get("type") in ("approve", "reject", "relax") for a in acts)
+            if res["reply"] and not decisions_only:            # for a decision, the app's own message says what happened
                 say("agent", res["reply"])
             for a in acts:                                        # answers to what the agent itself is waiting for
                 if a.get("type") == "whatif" and ss.get("whatif"):

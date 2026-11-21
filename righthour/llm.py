@@ -110,7 +110,9 @@ class LLMClient:
         except RuntimeError as e:
             err = e
             for backup in BACKUP.get(model, []):
-                if not re.search(r"\b(429|503|rate limit|quota)\b", str(err), re.I):
+                # out of quota, busy, or a reply the provider could not handle (gpt-oss-20b sometimes answers in a tool format
+                # Groq rejects): the next model in the chain tries
+                if not re.search(r"\b(429|503|rate limit|quota)\b|tool choice is none|parsing failed|could not be parsed|failed_generation", str(err), re.I):
                     break
                 try:
                     out = self._complete(backup, system, prompt, max_tokens)
