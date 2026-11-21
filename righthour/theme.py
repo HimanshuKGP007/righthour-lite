@@ -299,7 +299,7 @@ section[data-testid="stSidebar"] > div { padding-top: .2rem; }
 .rh-flow .d { font-size:14px; color:var(--muted); line-height:1.5; margin-top:2px; max-width:80ch; }
 .rh-flow .d b { color:var(--ink); } .rh-flow .d b.off { color:var(--red); }
 .rh-src2 { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1fr); gap:18px; padding:14px 16px; background:var(--navy-05);
-           border:1px solid var(--rule); border-radius:10px; font-size:13.5px; color:var(--muted); line-height:1.5; }
+           border:1px solid var(--rule); border-radius:10px; font-size:13.5px; color:var(--muted); line-height:1.5; margin-bottom:16px; }
 .rh-src2 b { color:var(--ink); font-weight:600; } .rh-src2 ul { margin:4px 0 0; padding-left:18px; } .rh-src2 p { margin:2px 0 8px; }
 @media (max-width: 900px){ .rh-src2 { grid-template-columns:1fr; } }
 /* ---------- Ask RightHour: the floating button and the chat */
@@ -377,6 +377,8 @@ html, body, .stApp { font-size:14.5px; }
 .rh-stepper li.active .w, .rh-stepper li.alert .w { color:var(--red); }
 .rh-stepper .s { font-size:12px; color:var(--muted); margin-top:3px; line-height:1.3; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 @media (max-width: 760px){ .rh-stepper .s, .rh-stepper .w { display:none; } .rh-stepper .t { font-size:12px; } }
+/* the last block in a bordered box never sits on the box's outline (Streamlit gives markdown a negative bottom margin) */
+[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] > div:last-child [data-testid="stMarkdownContainer"] > div:last-child { margin-bottom:6px; }
 /* chat suggestions: small boxes that wrap */
 .st-key-chips button { min-height:28px !important; padding:3px 11px !important; border-radius:14px !important; }
 .st-key-chips button p { font-size:12.5px !important; white-space:nowrap; }

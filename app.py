@@ -691,6 +691,10 @@ def _short(text: str, n: int = 40) -> str:
     return text if len(text) <= n else text[:n].rsplit(" ", 1)[0] + "…"
 
 
+STATUS_WORDS = {"awaiting_approval": "waiting for your approval", "work_order_issued": "approved, work order issued", "rejected": "rejected",
+                "fallback": "usual schedule kept", "needs_manager_choice": "waiting for your choice"}
+
+
 def step_strip(state: dict | None, pending: dict | None, verified: bool) -> None:
     s = state or {}
     status = s.get("status", "")
@@ -1188,7 +1192,7 @@ def _flow(eid: str) -> list[tuple[str, str]]:
                 ("Plans the steps", "Gather data → forecast → read prices → read notes → optimise → check rules → explain → ask you."),
                 ("Calls each tool in turn", f"{len(_run_rows())} steps logged in this run." if run else "Not run yet."),
                 ("Plans again if a step fails", "No plan fits? It tests each flexible rule and asks you which one to relax."),
-                ("Asks you to approve", f"Status now: <b>{escape(str(s.get('status', 'no plan yet')))}</b>.")]
+                ("Asks you to approve", f"Status now: <b>{escape(STATUS_WORDS.get(s.get('status'), str(s.get('status') or 'no plan yet').replace('_', ' ')))}</b>.")]
     if eid in ("price", "bill"):
         bands = ", ".join(f"{b['type']} {b['start_h']:02d}–{b['end_h']:02d} h ₹{b['rate']:.2f}" for b in ss.tariff["slots"])
         warns = [i.text for i in validate_tariff(ss.tariff, ss.get('price_rules')) if i.level == "warning"]
