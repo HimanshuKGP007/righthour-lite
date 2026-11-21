@@ -678,24 +678,66 @@ def machine_savings(problem: dict, baseline: dict, plan: dict) -> dict[str, floa
     return out
 
 
-def why_moved(problem: dict, m: dict, start: int) -> str:
-    """Plain-code answer to "why move this machine there?". Every number comes from the tariff and the machine's window."""
-    from .tariff import slot_rates
-    r = slot_rates(problem["tariff"])
-    avg = lambda h: sum(r[int(k)] for k in range(int(h * SLOTS_PER_HOUR), int((h + m["duration_h"]) * SLOTS_PER_HOUR))) / (m["duration_h"] * SLOTS_PER_HOUR)  # noqa: E731
-    b = m.get("baseline_start_h")
+def move_facts(problem: dict, schedule: dict, m: dict) -> dict:
+    """The real reasons behind one machine's start time, worked out by pricing the day both ways (plain code, no AI)."""
+    from .optimiser import allowed_starts
+    from .tariff import DT_H, slot_rates
+    r, pf, pv, base = slot_rates(problem["tariff"]), problem["pf"], problem["pv_kw"], problem["base_kw"]
+    start, b = schedule[m["id"]], m.get("baseline_start_h")
+    span = lambda h: [k % N_SLOTS for k in range(int(h * SLOTS_PER_HOUR), int((h + m["duration_h"]) * SLOTS_PER_HOUR))]  # noqa: E731
+    avg = lambda v, h: sum(v[k] for k in span(h)) / max(len(span(h)), 1)  # noqa: E731
+    solar = lambda h: sum(min(m["kw"], max(0.0, pv[k] - base[k])) for k in span(h)) * DT_H  # noqa: E731
+    plan = evaluate(problem, schedule)
+    f = {"machine": m["name"], "kw": m["kw"], "hours": m["duration_h"], "from_h": b, "to_h": start,
+         "window": (m["earliest_h"], m["latest_finish_h"]), "why_window": m.get("why_window", ""),
+         "rate_to": avg(r, start), "pf_to": avg(pf, start), "solar_to": solar(start),
+         "plan_peak": plan["peak_kva"], "month_high": problem["mtd_max_kva"], "contract": problem["contract_demand_kva"]}
+    if b is None or b == start:
+        return f
+    f.update({"rate_from": avg(r, b), "pf_from": avg(pf, b), "solar_from": solar(b), "usual_allowed": b in allowed_starts(m)})
+    f["clash"] = [o["name"] for o in problem["shiftable"] for a_, b_ in problem.get("no_overlap", [])
+                  if o["id"] != m["id"] and {a_, b_} == {m["id"], o["id"]} and set(span(b)) & set(span(schedule[o["id"]]))]
+    if f["usual_allowed"]:
+        alt = evaluate(problem, {**schedule, m["id"]: b})
+        f.update({"saving_rs": alt["total_rs"] - plan["total_rs"], "energy_rs": alt["energy_rs"] - plan["energy_rs"],
+                  "demand_rs": alt["demand_rs"] - plan["demand_rs"], "peak_if_usual": alt["peak_kva"]})
+    return f
+
+
+def why_moved(problem: dict, m: dict, start: int, schedule: dict | None = None) -> str:
+    """Plain-code answer to "why move this machine there?". Every number comes from pricing the day with and without the move."""
+    sched = {**{x["id"]: x.get("baseline_start_h") if x.get("baseline_start_h") is not None else x["earliest_h"]
+                for x in problem["shiftable"]}, **(schedule or {}), m["id"]: start}
+    f = move_facts(problem, sched, m)
+    b = f["from_h"]
     if b is None:
-        return f"{m['name']} is new today; {hhmm(start)} is the cheapest time inside its window ({hhmm(m['earliest_h'])} to {hhmm(m['latest_finish_h'])})."
-    old, new = avg(b), avg(start)
-    if new >= old:
-        return f"{m['name']} stays close to its usual time: no cheaper hour fits its rules."
-    cut = (1 - new / old) * 100
-    frac = {33: "a third", 25: "a quarter", 50: "half"}.get(int(round(cut / 1)) if cut in (25, 33, 50) else 0, f"{cut:.0f}%")
-    if 30 <= cut <= 36:
-        frac = "a third"
+        return (f"{m['name']} is new today; {hhmm(start)} is the cheapest time inside its window "
+                f"({hhmm(m['earliest_h'])} to {hhmm(m['latest_finish_h'])}).")
+    if b == start:
+        return f"{m['name']} stays at its usual time: no other hour inside its window costs less."
+    if not f["usual_allowed"]:
+        return (f"Its usual time ({hhmm(b)}) is not allowed today: it must run between {hhmm(m['earliest_h'])} and "
+                f"{hhmm(m['latest_finish_h'])}" + (f" ({f['why_window']})" if f["why_window"] else "") + f". {hhmm(start)} is the cheapest time that fits.")
+    why = []
+    if f["rate_to"] < f["rate_from"] - 0.005:
+        why.append(f"power is cheaper then: ₹{f['rate_to']:.2f} against ₹{f['rate_from']:.2f} per unit")
+    elif abs(f["rate_to"] - f["rate_from"]) <= 0.005:
+        why.append(f"the price per unit is the same at both times (₹{f['rate_to']:.2f})")
+    if f["pf_to"] > f["pf_from"] + 0.005:
+        why.append(f"the power factor is better then ({f['pf_to']:.2f} against {f['pf_from']:.2f}); the bill counts kVAh, "
+                   "so the same work bills fewer units")
+    if f["solar_to"] > f["solar_from"] + 1:
+        why.append(f"rooftop solar covers more of it ({f['solar_to']:.0f} kWh against {f['solar_from']:.0f} kWh)")
+    if f.get("demand_rs", 0) > 1:
+        why.append(f"at {hhmm(b)} the site would reach {f['peak_if_usual']:.0f} kVA, a new high for the month (now {f['month_high']:.0f}), "
+                   f"which adds ₹{f['demand_rs']:,.0f} of demand charge")
+    if f["clash"]:
+        why.append(f"at {hhmm(b)} it would run together with the {', '.join(f['clash'])}, which the rules do not allow")
+    sav = f.get("saving_rs", 0.0)
+    tail = (f" In all, the move saves ₹{sav:,.0f} for the day." if sav >= 1 else
+            " The bill is almost the same either way; the planner keeps it there so it still fits with the other machines.")
     ok = start + m["duration_h"] <= m["latest_finish_h"]
-    return (f"Power costs {frac} less then: ₹{new:.2f} against ₹{old:.2f} per unit at {hhmm(b)}. "
-            + ("No deadline moves." if ok else "It still finishes inside its window."))
+    return ("Moved because " + "; ".join(why) + "." if why else "Moved.") + tail + (f" It still finishes by {hhmm(m['latest_finish_h'])}." if ok else "")
 
 
 def apply_learned_rules(machines_cfg: dict, shiftable: list[dict]) -> None:
