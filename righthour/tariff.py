@@ -99,13 +99,16 @@ def slot_types(t: dict) -> list[str]:
     return out
 
 
-def site_kva(base_kw: list[float], pf: list[float], pv_kw: list[float], machine_kw: list[float]) -> list[float]:
-    """Apparent power per slot. Base load uses the metered power factor; scheduled machines are taken at a power
-    factor close to 1 (the deck's worked-example assumption). Rooftop solar offsets base load first, then machines."""
+def site_kva(base_kw: list[float], pf: list[float], pv_kw: list[float], machine_kw: list[float],
+             machine_pf: list[float] | None = None) -> list[float]:
+    """Apparent power per slot. Base load uses the metered power factor. Scheduled machines use machine_pf: the day's
+    metered power factor for that slot (the default: the bill is in kVAh, so a machine costs more where the power factor
+    is low), or None for a power factor of 1 (the deck's worked example). Rooftop solar offsets base load first, then machines."""
     out = []
     for k in range(N_SLOTS):
         surplus = max(0.0, pv_kw[k] - base_kw[k])
-        out.append(max(0.0, base_kw[k] - pv_kw[k]) / pf[k] + max(0.0, machine_kw[k] - surplus))
+        mpf = machine_pf[k] if machine_pf else 1.0
+        out.append(max(0.0, base_kw[k] - pv_kw[k]) / pf[k] + max(0.0, machine_kw[k] - surplus) / mpf)
     return out
 
 

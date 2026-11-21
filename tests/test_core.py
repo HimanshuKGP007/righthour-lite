@@ -1,5 +1,6 @@
 import itertools
 import json
+from pathlib import Path
 
 import pytest
 
@@ -71,6 +72,8 @@ def test_milp_matches_brute_force():
 
 
 def _ctx(**kw):
+    from righthour.agents import PROCESS_DEFAULTS
+    kw.setdefault("process", {**PROCESS_DEFAULTS, "machine_pf": "unity"})   # the deck's worked example takes machines at a power factor of 1
     return Context(SITE, TARIFF, MACH, D.synthetic_history(), **kw)
 
 
@@ -262,3 +265,25 @@ def test_machines_run_only_on_their_days():
     assert not runs_today(m, dt.date(2018, 12, 25), ["2018-12-25"])                                 # a holiday is a Sunday
     assert runs_today({"runs_on": "Every day"}, dt.date(2018, 12, 25), ["2018-12-25"])
     assert runs_today({}, dt.date(2018, 12, 30))                                                    # no setting: every day
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.mark.skipif(not (ROOT / "Steel_industry_data.csv").exists(), reason="steel data not present")
+def test_saving_depends_on_the_day():
+    """The same settings on different days must give different savings (each day has its own load, power factor and solar)."""
+    import datetime as dt
+    from righthour.agents import PROCESS_DEFAULTS
+    from righthour.graph import start
+    hist = D.load_uci_csv(ROOT / "Steel_industry_data.csv", None)
+    out = {}
+    for d in (dt.date(2018, 3, 14), dt.date(2018, 7, 2), dt.date(2018, 10, 18), dt.date(2018, 12, 18)):
+        for name, extra in (("default", {}), ("one move", {"max_moves": 1})):
+            ctx = Context(SITE, TARIFF, MACH, hist, cloudy=False, plan_date=d, process={**PROCESS_DEFAULTS, **extra})
+            _, _, st, _ = start(ctx)
+            out[(name, d)] = round(st["saving_rs"] or 0)
+    for name in ("default", "one move"):
+        vals = [v for (n, _), v in out.items() if n == name]
+        assert len(set(vals)) == len(vals), (name, vals)          # no two days give the same saving
+    assert all(out[("one move", d)] <= out[("default", d)] + 1 for (_, d) in out)   # a limit never saves more

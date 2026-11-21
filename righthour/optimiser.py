@@ -37,7 +37,7 @@ def machine_kw(fixed: list[dict], shiftable: list[dict], schedule: dict[str, int
 
 def evaluate(problem: dict, schedule: dict[str, int]) -> dict:
     mk = machine_kw(problem["fixed"], problem["shiftable"], schedule)
-    kva = site_kva(problem["base_kw"], problem["pf"], problem["pv_kw"], mk)
+    kva = site_kva(problem["base_kw"], problem["pf"], problem["pv_kw"], mk, problem["pf"] if problem.get("machine_pf_metered") else None)
     b = bill(kva, problem["tariff"], problem["mtd_max_kva"])
     b["machine_kw"] = mk
     b["load_kw"] = [problem["base_kw"][k] + mk[k] for k in range(N_SLOTS)]
@@ -83,7 +83,8 @@ def optimise_schedule(problem: dict, time_limit_s: int = 20) -> dict:
     peak = solver.NumVar(0, inf, "peak_kva")
     extra = solver.NumVar(0, inf, "extra_kva")
     for k in range(N_SLOTS):
-        solver.Add(mimp[k] >= fixed_kw[k] + sum(m["kw"] * cover(m, k) for m in machines) - surplus[k])
+        mpf = pf[k] if problem.get("machine_pf_metered") else 1.0      # same rule as site_kva: the day's power factor, or 1
+        solver.Add(mimp[k] >= (fixed_kw[k] + sum(m["kw"] * cover(m, k) for m in machines) - surplus[k]) / mpf)
         solver.Add(base_kva[k] + mimp[k] <= cd)
         solver.Add(peak >= base_kva[k] + mimp[k])
     solver.Add(extra >= peak - mtd)

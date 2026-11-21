@@ -1272,6 +1272,8 @@ def _flow(eid: str) -> list[tuple[str, str]]:
 # ---- every rule and limit in the system, in one list. Each box shows its own; "All rules and limits" shows them all.
 # (box, key, label, kind, options, help). kind: slider | pct | toggle | money | radio | optint | price
 LIMITS = [
+    ("opt", "machine_pf", "Machines' power factor", "radio", [("metered", "The day's meter reading"), ("unity", "Taken as 1 (deck example)")],
+     "The bill is in kVAh. With the meter's power factor, a machine costs more in hours when the plant's power factor is low."),
     ("guard", "margin_pct", "Safety margin under the contract demand (%)", "slider", (0, 20, 1, "%d"), "The plan must stay this far under the contract."),
     ("guard", "block_new_peak", "Never set a new monthly peak", "toggle", None, "On: never above this month's highest demand."),
     ("guard", "max_moves", "Most machines moved in a day", "optint", None, "Fewer moves, less disruption on the floor."),
@@ -2094,6 +2096,15 @@ def morning_brief() -> None:
             rows += (f"<div class='rh-mv kept'><div class='n'>Off today{' (plant holiday)' if state['problem'].get('holiday') else ''}</div>"
                      f"<div class='tl' style='background:none'></div><div class='a'>{escape(', '.join(n.split(' (')[0] for n in idle))}</div><div class='s'>—</div></div>")
         html(f"<div class='rh-mvs'><div class='rh-axis'><span></span><span class='ticks'><em>0h</em><em>6h</em><em>12h</em><em>18h</em><em>24h</em></span></div>{rows}</div>")
+        p_ = ss.proc
+        on = [x for x in (f"at most {p_['max_moves']} machine(s) moved" if p_.get("max_moves") is not None else "",
+                          f"{p_['margin_pct']}% under the contract" if p_.get("margin_pct") else "",
+                          "no new monthly peak" if p_.get("block_new_peak") else "",
+                          f"only if it saves {rs(p_['min_saving_rs'])}+" if p_.get("min_saving_rs") else "",
+                          "machines at a power factor of 1" if p_.get("machine_pf") == "unity" else "") if x]
+        if on:   # a limit set once (in chat, Guardrails or the Control room) stays on for every day until changed
+            html(f"<div class='rh-note' style='margin:6px 0 0'>{ICONS['shield']} <b>Your limits are on:</b> {escape('; '.join(on))}. "
+                 "They hold for every day until you change them on Guardrails.</div>")
         ver = [json.loads(r["detail"]) for r in ss.audit.rows() if r["action"] == "verify_savings"]
         html("<div class='rh-ticks'>"
              f"<span class='{'ok' if win_ok else 'bad'}'>{ICONS['check' if win_ok else 'alert']}All orders on time</span>"

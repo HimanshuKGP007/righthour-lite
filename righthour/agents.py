@@ -269,6 +269,7 @@ def build_problem(ctx: Context, st: dict, relax: dict | None = None, drop_rule: 
             m["earliest_h"], m["latest_finish_h"] = int(h), int(h) + m["duration_h"]
     no_overlap = [(r["a"], r["b"]) for r in ctx.machines_cfg["rules"] if r["type"] == "no_overlap" and r["id"] != drop_rule]
     return {"idle": idle, "holiday": str(day) in set(map(str, hol)),
+            "machine_pf_metered": {**PROCESS_DEFAULTS, **(ctx.process or {})}["machine_pf"] == "metered",
             "base_kw": st["forecast"]["kw"], "pf": st["forecast"]["pf"], "pv_kw": st["pv"]["kw"], "fixed": st["fixed"],
             "shiftable": shiftable, "no_overlap": no_overlap, "tariff": ctx.tariff,
             "contract_demand_kva": ctx.site["contract_demand_kva"], "mtd_max_kva": ctx.site["month_to_date_max_kva"],
@@ -324,7 +325,7 @@ def _esc(ctx) -> int:
 
 
 # How each box of the diagram works. The Control room changes these per session; each run records the values it used.
-PROCESS_DEFAULTS = {"weeks": 4, "method": "weekday", "use_learning": True, "solar_on": True, "spike_x": 3.0, "pf_min": 0.6, "max_gap_h": 2.0, "stuck_h": 3.0, "shutdown_pct": 0.2, "stale_days": 7,
+PROCESS_DEFAULTS = {"weeks": 4, "method": "weekday", "use_learning": True, "solar_on": True, "machine_pf": "metered", "spike_x": 3.0, "pf_min": 0.6, "max_gap_h": 2.0, "stuck_h": 3.0, "shutdown_pct": 0.2, "stale_days": 7,
                     "time_limit_s": 20, "notes_on": True,
                     # guardrails the manager sets: the optimiser obeys them and the rule check enforces them
                     "margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0,
