@@ -99,16 +99,20 @@ def slot_types(t: dict) -> list[str]:
     return out
 
 
+MACHINE_PF_DEFAULT = 0.85   # a loaded industrial motor or drive (team assumption); each machine can set its own in Plant setup
+
+
 def site_kva(base_kw: list[float], pf: list[float], pv_kw: list[float], machine_kw: list[float],
-             machine_pf: list[float] | None = None) -> list[float]:
-    """Apparent power per slot. Base load uses the metered power factor. Scheduled machines use machine_pf: the day's
-    metered power factor for that slot (the default: the bill is in kVAh, so a machine costs more where the power factor
-    is low), or None for a power factor of 1 (the deck's worked example). Rooftop solar offsets base load first, then machines."""
+             machine_kva: list[float] | None = None) -> list[float]:
+    """Apparent power per slot. Base load uses the meter's power factor for that slot (measured). Scheduled machines
+    bring their own power factor: machine_kva is the sum of kW / pf over the machines running (None = power factor 1,
+    the deck's worked example). The bill is in kVAh, so a machine with a low power factor costs more at any hour.
+    Rooftop solar offsets base load first, then machines."""
     out = []
+    mkva = machine_kva if machine_kva is not None else machine_kw
     for k in range(N_SLOTS):
         surplus = max(0.0, pv_kw[k] - base_kw[k])
-        mpf = machine_pf[k] if machine_pf else 1.0
-        out.append(max(0.0, base_kw[k] - pv_kw[k]) / pf[k] + max(0.0, machine_kw[k] - surplus) / mpf)
+        out.append(max(0.0, base_kw[k] - pv_kw[k]) / pf[k] + max(0.0, mkva[k] - surplus))
     return out
 
 

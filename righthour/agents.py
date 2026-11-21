@@ -271,7 +271,7 @@ def build_problem(ctx: Context, st: dict, relax: dict | None = None, drop_rule: 
     skip = set((ctx.process or {}).get("skip_rules") or [])          # crew rules the manager relaxed for this day only
     no_overlap = [(r["a"], r["b"]) for r in ctx.machines_cfg["rules"] if r["type"] == "no_overlap" and r["id"] != drop_rule and r["id"] not in skip]
     return {"idle": idle, "holiday": str(day) in set(map(str, hol)),
-            "machine_pf_metered": {**PROCESS_DEFAULTS, **(ctx.process or {})}["machine_pf"] == "metered",
+            "machine_pf": "unity" if {**PROCESS_DEFAULTS, **(ctx.process or {})}["machine_pf"] == "unity" else "own",
             "base_kw": st["forecast"]["kw"], "pf": st["forecast"]["pf"], "pv_kw": st["pv"]["kw"], "fixed": st["fixed"],
             "shiftable": shiftable, "no_overlap": no_overlap, "tariff": ctx.tariff,
             "contract_demand_kva": ctx.site["contract_demand_kva"], "mtd_max_kva": ctx.site["month_to_date_max_kva"],
@@ -327,7 +327,7 @@ def _esc(ctx) -> int:
 
 
 # How each box of the diagram works. The Control room changes these per session; each run records the values it used.
-PROCESS_DEFAULTS = {"weeks": 4, "method": "weekday", "use_learning": True, "solar_on": True, "machine_pf": "metered", "spike_x": 3.0, "pf_min": 0.6, "max_gap_h": 2.0, "stuck_h": 3.0, "shutdown_pct": 0.2, "stale_days": 7,
+PROCESS_DEFAULTS = {"weeks": 4, "method": "weekday", "use_learning": True, "solar_on": True, "machine_pf": "own", "spike_x": 3.0, "pf_min": 0.6, "max_gap_h": 2.0, "stuck_h": 3.0, "shutdown_pct": 0.2, "stale_days": 7,
                     "time_limit_s": 20, "notes_on": True,
                     # guardrails the manager sets: the optimiser obeys them and the rule check enforces them
                     "margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0, "min_move_rs": 100,
@@ -682,7 +682,7 @@ def move_facts(problem: dict, schedule: dict, m: dict) -> dict:
     """The real reasons behind one machine's start time, worked out by pricing the day both ways (plain code, no AI)."""
     from .optimiser import allowed_starts
     from .tariff import DT_H, slot_rates
-    r, pf, pv, base = slot_rates(problem["tariff"]), problem["pf"], problem["pv_kw"], problem["base_kw"]
+    r, pv, base = slot_rates(problem["tariff"]), problem["pv_kw"], problem["base_kw"]
     start, b = schedule[m["id"]], m.get("baseline_start_h")
     span = lambda h: [k % N_SLOTS for k in range(int(h * SLOTS_PER_HOUR), int((h + m["duration_h"]) * SLOTS_PER_HOUR))]  # noqa: E731
     avg = lambda v, h: sum(v[k] for k in span(h)) / max(len(span(h)), 1)  # noqa: E731
@@ -690,11 +690,11 @@ def move_facts(problem: dict, schedule: dict, m: dict) -> dict:
     plan = evaluate(problem, schedule)
     f = {"machine": m["name"], "kw": m["kw"], "hours": m["duration_h"], "from_h": b, "to_h": start,
          "window": (m["earliest_h"], m["latest_finish_h"]), "why_window": m.get("why_window", ""),
-         "rate_to": avg(r, start), "pf_to": avg(pf, start), "solar_to": solar(start),
+         "rate_to": avg(r, start), "machine_pf": m.get("pf", 0.85), "solar_to": solar(start),
          "plan_peak": plan["peak_kva"], "month_high": problem["mtd_max_kva"], "contract": problem["contract_demand_kva"]}
     if b is None or b == start:
         return f
-    f.update({"rate_from": avg(r, b), "pf_from": avg(pf, b), "solar_from": solar(b), "usual_allowed": b in allowed_starts(m)})
+    f.update({"rate_from": avg(r, b), "solar_from": solar(b), "usual_allowed": b in allowed_starts(m)})
     f["clash"] = [o["name"] for o in problem["shiftable"] for a_, b_ in problem.get("no_overlap", [])
                   if o["id"] != m["id"] and {a_, b_} == {m["id"], o["id"]} and set(span(b)) & set(span(schedule[o["id"]]))]
     if f["usual_allowed"]:
@@ -723,9 +723,6 @@ def why_moved(problem: dict, m: dict, start: int, schedule: dict | None = None) 
         why.append(f"power is cheaper then: ₹{f['rate_to']:.2f} against ₹{f['rate_from']:.2f} per unit")
     elif abs(f["rate_to"] - f["rate_from"]) <= 0.005:
         why.append(f"the price per unit is the same at both times (₹{f['rate_to']:.2f})")
-    if f["pf_to"] > f["pf_from"] + 0.005:
-        why.append(f"the power factor is better then ({f['pf_to']:.2f} against {f['pf_from']:.2f}); the bill counts kVAh, "
-                   "so the same work bills fewer units")
     if f["solar_to"] > f["solar_from"] + 1:
         why.append(f"rooftop solar covers more of it ({f['solar_to']:.0f} kWh against {f['solar_from']:.0f} kWh)")
     if f.get("demand_rs", 0) > 1:

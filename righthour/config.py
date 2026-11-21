@@ -16,7 +16,7 @@ DATA_DIR = ROOT / "data"
 CONFIG_PATH = ROOT / "plant_config.json"
 
 RUN_DAYS = {"Every day": (0, 1, 2, 3, 4, 5, 6), "Mon–Sat": (0, 1, 2, 3, 4, 5), "Mon–Fri": (0, 1, 2, 3, 4), "Weekends": (5, 6)}
-MACHINE_COLS = ["Machine", "Runs on", "kW", "Hours", "Earliest start", "Latest finish", "Usual start",
+MACHINE_COLS = ["Machine", "Runs on", "kW", "Power factor", "Hours", "Earliest start", "Latest finish", "Usual start",
                 "Could start as early as", "Could finish as late as", "Side cost if relaxed", "Why this window"]
 RULE_COLS = ["Machine A", "Machine B", "Why they cannot run together", "Can be relaxed?", "Wording when relaxed", "Side cost if relaxed"]
 SLOT_COLS = ["From hour", "To hour", "Band", "Rate (₹ per kVAh)"]
@@ -90,7 +90,7 @@ def _num(v):
 
 # ---------------------------------------------------------------- machines
 def machines_to_rows(machines: list[dict]) -> list[dict]:
-    return [{"Machine": m["name"], "Runs on": m.get("runs_on", "Every day"), "kW": m["kw"], "Hours": m["duration_h"], "Earliest start": m["earliest_h"],
+    return [{"Machine": m["name"], "Runs on": m.get("runs_on", "Every day"), "kW": m["kw"], "Power factor": m.get("pf", 0.85), "Hours": m["duration_h"], "Earliest start": m["earliest_h"],
              "Latest finish": m["latest_finish_h"], "Usual start": m.get("baseline_start_h"),
              "Could start as early as": m.get("relax_earliest_h"), "Could finish as late as": m.get("relax_latest_finish_h"),
              "Side cost if relaxed": m.get("relax_note", ""), "Why this window": m.get("why_window", "")} for m in machines]
@@ -123,6 +123,10 @@ def rows_to_machines(rows: list[dict]) -> tuple[list[dict], list[str]]:
              "baseline_start_h": int(usual) if usual is not None else None, "continuous": True,
              "why_window": (r.get("Why this window") or "").strip(),
              "runs_on": r.get("Runs on") if r.get("Runs on") in RUN_DAYS else "Every day"}
+        pf_ = _num(r.get("Power factor"))
+        if pf_ is not None and not 0.3 <= float(pf_) <= 1.0:
+            errs.append(f"{tag}: power factor must be between 0.3 and 1.0.")
+        m["pf"] = round(float(pf_), 2) if pf_ is not None else 0.85
         re_, rl = _num(r.get("Could start as early as")), _num(r.get("Could finish as late as"))
         if re_ is not None:
             if float(re_) < e:

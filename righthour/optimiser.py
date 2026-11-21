@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from ortools.linear_solver import pywraplp
 
-from .tariff import DT_H, N_SLOTS, SLOTS_PER_HOUR, bill, site_kva, slot_rates
+from .tariff import DT_H, MACHINE_PF_DEFAULT, N_SLOTS, SLOTS_PER_HOUR, bill, site_kva, slot_rates
 
 MOVE_PENALTY_RS = 0.02
 CENTRE_PENALTY_RS_PER_H = 0.001
@@ -23,21 +23,29 @@ def allowed_starts(m: dict) -> list[int]:
     return [s for s in range(int(m["earliest_h"]), int(m["latest_finish_h"] - m["duration_h"]) + 1) if 0 <= s <= 23]
 
 
-def machine_kw(fixed: list[dict], shiftable: list[dict], schedule: dict[str, int]) -> list[float]:
+def mpf(m: dict, own: bool = True) -> float:
+    """A machine's power factor: its own (Plant setup, default 0.85), or 1 for the deck's worked example."""
+    return min(max(float(m.get("pf") or MACHINE_PF_DEFAULT), 0.3), 1.0) if own else 1.0
+
+
+def machine_kw(fixed: list[dict], shiftable: list[dict], schedule: dict[str, int], kva: bool = False, own_pf: bool = True) -> list[float]:
+    """kW per slot of the machines (kva=True: kVA, each machine's kW divided by its own power factor)."""
     total = [0.0] * N_SLOTS
     for f in fixed:
         for k in range(int(f["start_h"] * SLOTS_PER_HOUR), int(f["end_h"] * SLOTS_PER_HOUR)):
-            total[k] += f["kw"]
+            total[k] += f["kw"] / (mpf(f, own_pf) if kva else 1.0)
     for m in shiftable:
         s = schedule[m["id"]]
         for k in range(int(s * SLOTS_PER_HOUR), int((s + m["duration_h"]) * SLOTS_PER_HOUR)):
-            total[k % N_SLOTS] += m["kw"]
+            total[k % N_SLOTS] += m["kw"] / (mpf(m, own_pf) if kva else 1.0)
     return total
 
 
 def evaluate(problem: dict, schedule: dict[str, int]) -> dict:
     mk = machine_kw(problem["fixed"], problem["shiftable"], schedule)
-    kva = site_kva(problem["base_kw"], problem["pf"], problem["pv_kw"], mk, problem["pf"] if problem.get("machine_pf_metered") else None)
+    own = problem.get("machine_pf", "own") == "own"
+    kva = site_kva(problem["base_kw"], problem["pf"], problem["pv_kw"], mk,
+                   machine_kw(problem["fixed"], problem["shiftable"], schedule, kva=True, own_pf=own))
     b = bill(kva, problem["tariff"], problem["mtd_max_kva"])
     b["machine_kw"] = mk
     b["load_kw"] = [problem["base_kw"][k] + mk[k] for k in range(N_SLOTS)]
@@ -60,7 +68,8 @@ def optimise_schedule(problem: dict, time_limit_s: int = 20) -> dict:
     cd, mtd = problem["contract_demand_kva"] * (1 - (g.get("margin_pct") or 0) / 100), problem["mtd_max_kva"]
     dc = tariff["demand_charge_per_kva_month"]
     machines = problem["shiftable"]
-    fixed_kw = machine_kw(problem["fixed"], [], {})
+    own = problem.get("machine_pf", "own") == "own"
+    fixed_kva = machine_kw(problem["fixed"], [], {}, kva=True, own_pf=own)
     base_kva = [max(0.0, base[k] - pv[k]) / pf[k] for k in range(N_SLOTS)]
     surplus = [max(0.0, pv[k] - base[k]) for k in range(N_SLOTS)]
 
@@ -84,8 +93,8 @@ def optimise_schedule(problem: dict, time_limit_s: int = 20) -> dict:
     peak = solver.NumVar(0, inf, "peak_kva")
     extra = solver.NumVar(0, inf, "extra_kva")
     for k in range(N_SLOTS):
-        mpf = pf[k] if problem.get("machine_pf_metered") else 1.0      # same rule as site_kva: the day's power factor, or 1
-        solver.Add(mimp[k] >= (fixed_kw[k] + sum(m["kw"] * cover(m, k) for m in machines) - surplus[k]) / mpf)
+        # same rule as site_kva: each machine at its own power factor, solar offsetting what is left
+        solver.Add(mimp[k] >= fixed_kva[k] + sum(m["kw"] / mpf(m, own) * cover(m, k) for m in machines) - surplus[k])
         solver.Add(base_kva[k] + mimp[k] <= cd)
         solver.Add(peak >= base_kva[k] + mimp[k])
     solver.Add(extra >= peak - mtd)

@@ -19,7 +19,8 @@ MACH = json.loads((DATA_DIR / "machines.json").read_text())
 
 def flat_problem(shiftable, fixed=(), cd=10_000, mtd=10_000):
     return {"base_kw": [0.0] * N_SLOTS, "pf": [1.0] * N_SLOTS, "pv_kw": [0.0] * N_SLOTS, "fixed": list(fixed),
-            "shiftable": shiftable, "no_overlap": [], "tariff": TARIFF, "contract_demand_kva": cd, "mtd_max_kva": mtd}
+            "shiftable": shiftable, "no_overlap": [], "tariff": TARIFF, "contract_demand_kva": cd, "mtd_max_kva": mtd,
+            "machine_pf": "unity"}   # the deck's worked example takes machines at a power factor of 1
 
 
 def test_worked_example_2704():
@@ -272,7 +273,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 @pytest.mark.skipif(not (ROOT / "Steel_industry_data.csv").exists(), reason="steel data not present")
 def test_saving_depends_on_the_day():
-    """The same settings on different days must give different savings (each day has its own load, power factor and solar)."""
+    """The same settings on different days give different savings: each day has its own load, solar and monthly high.
+    Two days may match when solar and the monthly high play no part that day: the same move then saves the same."""
     import datetime as dt
     from righthour.agents import PROCESS_DEFAULTS
     from righthour.graph import start
@@ -285,5 +287,20 @@ def test_saving_depends_on_the_day():
             out[(name, d)] = round(st["saving_rs"] or 0)
     for name in ("default", "one move"):
         vals = [v for (n, _), v in out.items() if n == name]
-        assert len(set(vals)) == len(vals), (name, vals)          # no two days give the same saving
+        assert len(set(vals)) >= 3, (name, vals)                   # the day matters: not one fixed number
     assert all(out[("one move", d)] <= out[("default", d)] + 1 for (_, d) in out)   # a limit never saves more
+
+
+def test_power_factor_never_moves_a_machine_inside_one_price_band():
+    """Each machine bills at its own power factor at any hour, so a move inside one price band saves nothing:
+    the base load's low night-time power factor (measured) must not pull a machine to another night hour."""
+    m = {"id": "pumps", "name": "Pumps", "kw": 60, "pf": 0.85, "duration_h": 3, "earliest_h": 0, "latest_finish_h": 9, "baseline_start_h": 2}
+    p = flat_problem([m])
+    p["machine_pf"] = "own"
+    p["pf"] = [0.5 if k < 6 * 4 else 0.95 for k in range(N_SLOTS)]     # a poor night-time power factor for the rest of the plant
+    p["base_kw"] = [20.0] * N_SLOTS
+    at2, at6 = evaluate(p, {"pumps": 2})["total_rs"], evaluate(p, {"pumps": 6})["total_rs"]
+    assert at2 == pytest.approx(at6)
+    assert optimise_schedule(p)["schedule"]["pumps"] == 2                 # stays at its usual time
+    # its own power factor does count: 60 kW for 3 h at 0.85 bills 211.8 kVAh, not 180
+    assert evaluate(p, {"pumps": 2})["total_rs"] - evaluate({**p, "shiftable": []} | {"shiftable": [{**m, "kw": 0.0001}]}, {"pumps": 2})["total_rs"] == pytest.approx(60 / 0.85 * 3 * 8.79, rel=1e-3)
