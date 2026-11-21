@@ -5,7 +5,7 @@ settings, rules learned from the manager, the forecast correction (with its hist
 settings and the guardrail floors. A new tab, a page refresh or a new day loads the same memory.
 
 The passphrase is never stored: only a salted PBKDF2 hash. A sign-in gives a random session token; only its SHA-256 hash is
-stored, and it expires. Five wrong tries lock the plant; each lock lasts twice as long. Too many wrong tries across all plants pause sign-in.
+stored, and it expires. Five wrong tries lock the plant; each lock lasts twice as long. Many wrong tries across all plants slow down further wrong tries.
 
 Storage is one SQLite file. On Streamlit Community Cloud that file lives on the app's disk, which a redeploy or a
 reboot clears; "Download my memory" keeps a copy.
@@ -20,6 +20,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -27,8 +28,8 @@ DB_PATH = ROOT / "righthour_memory.sqlite"
 DEMO = "demo"
 KEYS = ("cfg", "bias", "bias_history", "library", "proc", "price_rules")
 SESSION_DAYS = 1
-MAX_FAILS, LOCK_MIN = 5, 5          # 5 wrong tries lock the plant; each new lock lasts twice as long (5, 10, 20... minutes)
-GLOBAL_FAILS_PER_MIN = 30            # wrong tries across all plants in one minute before every sign-in pauses
+MAX_FAILS, LOCK_MIN = 5, 5          # 5 wrong tries lock the plant; each new lock lasts twice as long, at most 40 minutes
+GLOBAL_FAILS_PER_MIN = 30            # wrong tries across all plants in one minute before each wrong try is slowed down
 
 
 def _now() -> dt.datetime:
@@ -72,8 +73,7 @@ class MemoryStore:
             raise ValueError("The passphrase needs at least 8 characters.")
         with self.lock:
             since = (_now() - dt.timedelta(minutes=1)).isoformat()
-            if self.db.execute("SELECT COUNT(*) FROM fails WHERE ts > ?", (since,)).fetchone()[0] >= GLOBAL_FAILS_PER_MIN:
-                raise PermissionError("Too many wrong sign-ins on this app. Wait one minute.")
+            busy = self.db.execute("SELECT COUNT(*) FROM fails WHERE ts > ?", (since,)).fetchone()[0] >= GLOBAL_FAILS_PER_MIN
             row = self.db.execute("SELECT salt, pin_hash, fails, locked_until, locks FROM plants WHERE code = ?", (code,)).fetchone()
             created = row is None
             if created:
@@ -85,11 +85,13 @@ class MemoryStore:
                 if locked and dt.datetime.fromisoformat(locked) > _now():
                     raise PermissionError(f"Too many wrong tries. Try again after {dt.datetime.fromisoformat(locked):%H:%M}.")
                 if not hmac.compare_digest(_hash_pin(pin, salt), ph):
+                    if busy:                   # many wrong tries app-wide: slow every wrong try down; a right one still gets in
+                        time.sleep(2)
                     fails += 1
                     self.db.execute("INSERT INTO fails VALUES (?)", (_now().isoformat(),))
                     self.db.execute("DELETE FROM fails WHERE ts < ?", ((_now() - dt.timedelta(hours=1)).isoformat(),))
                     if fails >= MAX_FAILS:     # lock, and each lock lasts twice as long as the one before
-                        until = (_now() + dt.timedelta(minutes=LOCK_MIN * 2 ** min(locks, 8))).isoformat()
+                        until = (_now() + dt.timedelta(minutes=LOCK_MIN * 2 ** min(locks, 3))).isoformat()
                         self.db.execute("UPDATE plants SET fails = 0, locked_until = ?, locks = ? WHERE code = ?", (until, locks + 1, code))
                     else:
                         self.db.execute("UPDATE plants SET fails = ? WHERE code = ?", (fails, code))
@@ -118,6 +120,12 @@ class MemoryStore:
             with self.lock:
                 self.db.execute("DELETE FROM sessions WHERE token_hash = ?", (hashlib.sha256(token.encode()).hexdigest(),))
                 self.db.commit()
+
+    def unlock(self, code: str) -> None:
+        """For the app's owner (run from a shell): clears a plant's lock and its lock count."""
+        with self.lock:
+            self.db.execute("UPDATE plants SET fails = 0, locked_until = NULL, locks = 0 WHERE code = ?", (clean_code(code),))
+            self.db.commit()
 
     def plant_name(self, code: str) -> str:
         with self.lock:
