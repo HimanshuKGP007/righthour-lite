@@ -3168,9 +3168,40 @@ def new_session() -> None:
 
 
 # ------------------------------------------------------------------ draw
-with st.container(key="newsess"):
+def _clear_off() -> None:
+    ss.ask_clear = False
+
+
+@st.dialog("Clear the agent's memory?", width="small", on_dismiss=_clear_off)
+def clear_memory_dialog() -> None:
+    st.markdown(f"This forgets everything the agent learned for **{escape(ss.get('plant_name', 'this plant'))}**:")
+    html("<ul class='rh-why'><li>rules it learned from your “no”s</li><li>the forecast correction</li><li>the tariff library</li>"
+         "<li>agent settings and guardrails (back to the defaults)</li></ul>"
+         "<div class='rh-note'>Plant setup stays: machines, tariff and site. The History record stays too. This cannot be undone.</div>")
+    c1, c2 = st.columns(2)
+    if c1.button("Clear memory", type="primary", icon=":material/delete_forever:", key="cm_yes", width="stretch"):
+        n_rules = len(ss.cfg["machines"].get("learned_rules", []))
+        ss.cfg = {**ss.cfg, "machines": {**ss.cfg["machines"], "learned_rules": []}}    # plant setup stays; learned rules go
+        save_plant_file(ss.cfg)
+        ss.bias, ss.bias_history, ss.library = 1.0, [], {}
+        ss.proc, ss.price_rules = dict(PROCESS_DEFAULTS), dict(PRICE_RULES)
+        ss.audit.log("memory", "Plant manager", "forget", tier="human", mode="human",
+                     reason=f"cleared all memory: {n_rules} learned rule(s), forecast correction, tariff library, agent settings and guardrails")
+        persist()
+        new_session()
+        st.rerun()
+    if c2.button("Cancel", key="cm_no", width="stretch"):
+        ss.ask_clear = False
+        st.rerun()
+
+
+with st.container(key="newsess", horizontal=True, gap="small"):
     st.button("New session", icon=":material/refresh:", key="newsess_btn", on_click=new_session, type="tertiary",
               help="Start fresh: a new chat and a new plan. Your sign-in, AI setup and plant memory stay.")
+    st.button("Clear memory", icon=":material/delete_forever:", key="clearmem_btn", type="tertiary",
+              on_click=lambda: ss.update(ask_clear=True), help="Forget what the agent learned for this plant. Asks you first.")
+if ss.get("ask_clear"):
+    clear_memory_dialog()
 if ss.get("run") and ss.get("offers_for") != getattr(ss.run.get("ctx"), "run_id", None):
     with st.spinner("Looking for a bigger saving one small change away..."):
         find_offers()
