@@ -48,11 +48,11 @@ ESCALATE_AT = 3      # default: the third attempt goes to the large model. Each 
 TASK_DEFAULT = {
     "validate_data": "T0", "forecast_load": "T0", "solar_forecast": "T0", "tariff_lookup": "T0",
     "optimise": "T0", "policy_check": "T0", "verify_savings": "T0", "learn": "T0",
-    "constraint_parse": "T1", "explain": "T1", "orchestrate": "T1", "replan": "T1",
+    "constraint_parse": "T1", "explain": "T1", "orchestrate": "T2", "replan": "T1", "data_review": "T1", "governance_review": "T1",
     "tariff_parse": "T2", "answer_question": "T2",
 }
 # Typical token use per call, for cost logging when no live API call is made (team estimate).
-TYPICAL_TOKENS = {"constraint_parse": (1500, 300), "explain": (3000, 400), "orchestrate": (2000, 200),
+TYPICAL_TOKENS = {"data_review": (900, 150), "governance_review": (1200, 200), "constraint_parse": (1500, 300), "explain": (3000, 400), "orchestrate": (2000, 200),
                   "replan": (5000, 800), "tariff_parse": (100_000, 10_000), "answer_question": (4000, 600)}
 
 

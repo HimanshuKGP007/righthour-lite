@@ -76,7 +76,11 @@ class LLMClient:
 
     def _fail(self, e) -> None:
         if True:
-            msg = re.sub(r"(gsk_|sk-|xai-)[A-Za-z0-9_\-]+", "[key hidden]", e.read().decode(errors="replace")[:160])
+            body_ = e.read().decode(errors="replace")
+            msg = re.sub(r"(gsk_|sk-|xai-)[A-Za-z0-9_\-]+", "[key hidden]", body_)
+            msg = re.sub(r"org_[A-Za-z0-9]+", "[account]", msg)
+            m_ = re.search(r'"message"\s*:\s*"([^"]{0,220})', msg)            # the provider's own words, not the raw JSON
+            msg = m_.group(1) if m_ else msg[:200]
             self.sink["text"] = f"{LABEL[self.provider]} error {e.code}: {msg}"
             raise RuntimeError(self.sink["text"]) from e
 

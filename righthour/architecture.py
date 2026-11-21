@@ -241,6 +241,6 @@ for _e in E:
         ACTION_BOX.setdefault(_a, _e[0])
 ACTION_BOX.update({"validate_data": "check", "forecast_load": "forecast", "solar_forecast": "weather", "tariff_lookup": "price",
                    "tariff_parse": "orders", "tariff_sign_off": "orders", "constraint_parse": "rules", "optimise": "opt",
-                   "policy_check": "guard", "orchestrate": "orch", "replan": "orch", "explain": "orch", "relax_rule": "manager",
+                   "policy_check": "guard", "governance_review": "guard", "data_review": "check", "orchestrate": "orch", "replan": "orch", "explain": "orch", "relax_rule": "manager",
                    "reject": "loop_no", "work_order": "runs", "verify_savings": "loop_day", "learn": "loop_day",
                    "setup_saved": "factory", "safe_fallback": "guard"})

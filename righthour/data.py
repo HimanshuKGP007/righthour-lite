@@ -134,7 +134,8 @@ def validate_load(df: pd.DataFrame, spike_x: float = 3.0, pf_min: float = 0.6, m
         wd_med = full.groupby(full.index.dayofweek).transform("median")      # a light Sunday is normal; a light Tuesday is not
         low = full[full < shutdown_pct * wd_med]
         if len(low):
-            issues.append({"level": "warning", "text": f"{len(low)} day(s) with under {shutdown_pct:.0%} of a usual day for that weekday (holiday or shutdown?): "
+            issues.append({"level": "warning", "kind": "low_days", "dates": [f"{d:%Y-%m-%d}" for d in low.index],
+                           "text": f"{len(low)} day(s) with under {shutdown_pct:.0%} of a usual day for that weekday (holiday or shutdown?): "
                                                        + ", ".join(f"{d:%d %b}" for d in low.index[:5]) + (" …" if len(low) > 5 else "")
                                                        + ". They pull the same-weekday forecast down."})
     part = int((n[(n > 0) & (n < 90)]).size)
@@ -190,12 +191,14 @@ def day_actuals(df: pd.DataFrame, day: dt.date) -> pd.DataFrame | None:
 
 
 def forecast_load(df: pd.DataFrame, bias: float = 1.0, target: dt.date | None = None, weeks: int = 4,
-                  method: str = "weekday") -> dict:
+                  method: str = "weekday", exclude: list[str] | None = None) -> dict:
     """Base load for the target day: mean of the same weekday over the `weeks` weeks before it (seasonal naive), times a
     learned bias. method="recent" uses the last 7 days instead. Only readings from before the target day are used.
     No target means the day after the data ends."""
     if target is not None:
         df = df[df["ts"] < pd.Timestamp(target)]
+    if exclude:                                  # days the data agent left out (holidays, shutdowns)
+        df = df[~df["ts"].dt.strftime("%Y-%m-%d").isin(set(exclude))]
     kw = _day_matrix(df, "kw").dropna()
     pf = _day_matrix(df, "pf").dropna()
     if kw.empty:

@@ -383,6 +383,11 @@ html, body, .stApp { font-size:14.5px; }
 .st-key-newsess { position:fixed; top:9px; right:64px; z-index:999991; width:auto !important; }
 .st-key-newsess button { background:#fff !important; border:1px solid var(--rule) !important; border-radius:8px !important; padding:2px 12px !important; min-height:32px !important; }
 .st-key-newsess button p { font-size:13px !important; }
+/* history timeline */
+.rh-tl tr.sep td { background:var(--navy-05); color:var(--navy); font-size:13px; border-top:2px solid var(--navy-30); }
+.rh-tl tr.sep svg { width:14px; height:14px; vertical-align:-2px; }
+.rh-tl tr.you td { background:#FFFBF0; } .rh-tl tr.mem td { background:#F1F8F3; }
+.rh-tl .rh-note { font-size:12.5px; margin-top:2px; }
 /* chat suggestions: small boxes that wrap */
 .st-key-chips button { min-height:28px !important; padding:3px 11px !important; border-radius:14px !important; }
 .st-key-chips button p { font-size:12.5px !important; white-space:nowrap; }

@@ -99,8 +99,16 @@ def persist() -> None:
         if hist or ss.bias != 1.0:
             ss.bias_history = hist + [{"ts": f"{dt.datetime.now():%Y-%m-%d %H:%M}", "bias": round(ss.bias, 4)}]
     try:
-        STORE.save(ss.plant, {"cfg": ss.cfg, "bias": ss.bias, "bias_history": ss.get("bias_history", []), "library": ss.library,
-                              "proc": ss.proc, "price_rules": ss.get("price_rules", PRICE_RULES)})
+        changed = STORE.save(ss.plant, {"cfg": ss.cfg, "bias": ss.bias, "bias_history": ss.get("bias_history", []), "library": ss.library,
+                                        "proc": ss.proc, "price_rules": ss.get("price_rules", PRICE_RULES)})
+        if changed and ss.get("audit") is not None and ss.get("mem_logged_once"):
+            what = {"cfg": f"plant settings ({len(ss.cfg['machines'].get('learned_rules', []))} lasting rule(s))", "bias": f"forecast correction x{ss.bias:.3f}",
+                    "bias_history": "correction history", "library": f"tariff library ({len(ss.library)})", "proc": "agent settings and limits",
+                    "price_rules": "price-check floors"}
+            ss.audit.log(ss.get("last_run_id") or "memory", "Factory memory", "memory_saved", tier="T0", mode="code",
+                         reason="saved for " + ("the demo plant" if ss.plant == MEM.DEMO else ss.get("plant_name", ss.plant)) + ": " + "; ".join(what[k] for k in changed if k != "bias_history"),
+                         detail={"keys": changed})
+        ss.mem_logged_once = True
     except Exception as e:  # noqa: BLE001  memory must never stop the planner
         ss.mem_err = str(e)
 
@@ -145,7 +153,8 @@ ss.setdefault("today_rules", [])   # rules from chat that hold for this plan day
 ss.setdefault("confirm_rule", None)
 ss.setdefault("whatif", None)
 ss.setdefault("offers", [])         # bigger savings the agent found one small change away, waiting for the manager
-ss.setdefault("today_skip", [])     # crew rules relaxed for this day only       # a change the agent tried but the manager has not yet set as the plan
+ss.setdefault("today_skip", [])     # crew rules relaxed for this day only
+ss.setdefault("session_start", dt.datetime.now().isoformat(timespec="seconds"))       # a change the agent tried but the manager has not yet set as the plan
 ss.setdefault("pins", {})
 persist()      # machines the manager pinned to an hour: {machine id: start hour}   # how each diagram box works; changed in the Control room
 ss.setdefault("scale_mode", True)
@@ -521,6 +530,9 @@ def on_new_plan(st_: dict, pend: dict | None) -> None:
                                                            "New rules and limits." if prev["proc"] != cur["proc"] else
                                                            "New plant settings." if prev["cfg"] != cur["cfg"] else "Re-planned.")
             say("agent", f"{cause} I moved {moved}. Still {save}." if mv else f"{cause} Everything stays at its usual time.")
+    concerns = (st_.get("policy") or {}).get("review") or []
+    if concerns:                                  # the governance agent read your notes against the plan
+        say("agent", "**Governance agent, worth a look:** " + " ".join(concerns))
     ss.prev_plan = cur
 
 
@@ -539,6 +551,7 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
             ss.run = {"ctx": ctx, "graph": graph, "cfg": cfg, "state": state, "pending": pending, "cfg_version": ss.cfg_version,
                       "inputs": (plan_date, goal, weather),
                       "proc": dict(ss.proc), "price_rules": dict(ss.get("price_rules", PRICE_RULES))}
+            ss.last_run_id = ctx.run_id
             on_new_plan(state, pending)
             ss.verify = None if not (ss.approved and ss.verify and ss.verify.get("_run") == ctx.run_id) else ss.verify
         except Exception as e:  # noqa: BLE001
@@ -1428,7 +1441,11 @@ ACTION_WORDS = {"validate_data": "Checked the meter readings", "forecast_load": 
                 "relax_rule": "Manager chose a rule to relax", "work_order": "Issued the work order", "reject": "Manager rejected the plan",
                 "verify_savings": "Checked the real saving", "learn": "Learned from the day", "setup_saved": "Settings saved",
                 "data_loaded": "Meter data loaded", "approve": "Manager approved the plan", "plan_update": "Manager changed the plan",
-                "plan_edit": "Manager approved an edited plan", "learn_rule": "Saved a “no” as a rule", "work_order_sent": "Work order sent to the shift lead", "plan_actions": "Turned a message into actions", "safe_fallback": "Kept the usual schedule", "answer_question": "Answered a question"}
+                "plan_edit": "Manager approved an edited plan", "learn_rule": "Saved a “no” as a rule", "work_order_sent": "Work order sent to the shift lead", "plan_actions": "Turned a message into actions", "safe_fallback": "Kept the usual schedule", "answer_question": "Answered a question",
+                "data_review": "Decided how to treat odd data", "governance_review": "Read your notes against the plan", "chat": "Message to the agent",
+                "what_if": "Tried a change first", "what_if_discarded": "Discarded a tried change", "offer_options": "Offered a bigger saving",
+                "offer_declined": "Kept the main plan", "one_time_rule": "Rule for this day only", "forget": "Forgot from memory",
+                "memory_saved": "Saved to factory memory"}
 TIER_WORDS = {"T0": "Plain code", "T1": "Small AI model", "T2": "Large AI model", "human": "A person"}
 
 
@@ -2520,6 +2537,7 @@ def handle_chat(preset: str | None = None) -> None:
     if not text:
         return
     say("manager", text)
+    ss.audit.log(_rid(), "Plant manager", "chat", tier="human", mode="human", reason=text[:300])
     act_on(text)
 
 
@@ -2846,11 +2864,41 @@ def page_history() -> None:
     page_header("History", "Every step the agents took, which tier did it, and what each decision cost.")
     html("<div class='rh-key'><span><span class='rh-chip t0'>T0</span>plain code, no AI</span><span><span class='rh-chip t1'>T1</span>small AI model</span>"
          "<span><span class='rh-chip t2'>T2</span>large AI model, only when needed</span><span><span class='rh-chip human'>human</span>a person</span></div>")
-    t1, t2 = st.tabs([":material/list: This run", ":material/database: All runs"])
+    t0, t1, t2 = st.tabs([":material/timeline: This session", ":material/list: This run", ":material/database: All records"])
+    with t0:
+        session_timeline()
     with t1:
         log_tab()
     with t2:
         audit_tab()
+
+
+def session_timeline() -> None:
+    """Every step of this session in order: each plan run with all its agents and tools, every message, try, offer and memory change."""
+    rows = [r for r in ss.audit.rows() if r["ts"] >= ss.get("session_start", "")]
+    if not rows:
+        html("<div class='rh-note' style='margin:14px 0'>Nothing yet. Generate a plan or talk to the agent.</div>")
+        return
+    runs = list(dict.fromkeys(r["run_id"] for r in rows if any(x["run_id"] == r["run_id"] and x["action"] == "orchestrate" for x in rows)))
+    calls = [r for r in rows if r["tier"] in ("T1", "T2") and r["mode"] == "live API"]
+    kpis([(str(len(runs)), "plan runs", ""), (str(len(calls)), "AI model calls", ""), (f"${sum(r['cost_usd'] for r in rows):.4f}", "AI spend", ""),
+          (str(sum(1 for r in rows if r["agent"] == "Plant manager")), "your actions", ""),
+          (str(sum(1 for r in rows if r["agent"] == "Factory memory" or r["action"] in ("learn_rule", "forget", "one_time_rule"))), "memory changes", "")])
+    body, cur, n = "", None, 0
+    for r in rows:
+        if r["action"] == "orchestrate" and r["run_id"] != cur:
+            cur, n = r["run_id"], n + 1
+            prev = [x for x in rows if x["ts"] <= r["ts"] and x["agent"] == "Plant manager" and x["run_id"] != r["run_id"]]
+            why = f"after: {escape(words(prev[-1]['action']).lower())}" + (f" “{escape(str(prev[-1]['reason'])[:70])}”" if prev[-1]["action"] == "chat" else "") if prev else "first plan of the session"
+            body += f"<tr class='sep'><td colspan='6'>{ICONS['loop']} <b>Plan run {n}</b> · {r['ts'][11:19]} · {why}</td></tr>"
+        who = r["agent"]
+        cls = "mem" if who == "Factory memory" or r["action"] in ("learn_rule", "forget", "one_time_rule") else ("you" if who == "Plant manager" else "")
+        body += (f"<tr class='{cls}'><td class='m'>{r['ts'][11:19]}</td><td>{chip(r['tier'])}</td><td>{escape(str(who))}</td>"
+                 f"<td><b>{escape(words(r['action']))}</b><div class='rh-note'>{escape(str(r['reason'])[:220])}</div></td>"
+                 f"<td>{escape(str(r['model'] or ('person' if r['tier'] == 'human' else 'code')))}</td>"
+                 f"<td class='r'>{'$%.4f' % r['cost_usd'] if r['cost_usd'] else ''}</td></tr>")
+    html("<table class='rh-log rh-tl'><thead><tr><th>Time</th><th>Tier</th><th>Who</th><th>What happened, and why</th><th>Model or tool</th>"
+         f"<th class='r'>Cost</th></tr></thead><tbody>{body}</tbody></table>")
 
 
 # ------------------------------------------------------------------ Ask RightHour: one assistant with every fact on screen

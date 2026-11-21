@@ -87,7 +87,7 @@ def test_day_ahead_plan_reproduces_the_deck_demo():
     assert r["saving_rs"] == pytest.approx(2704, abs=0.5)
     assert "800 kVAh" in r["explanation"] and "untouched" in r["explanation"]
     tiers = [(s["action"], s["tier"]) for s in r["steps"]]
-    assert ("tariff_lookup", "T0") in tiers and ("constraint_parse", "T1") in tiers and ("explain", "T1") in tiers
+    assert ("tariff_lookup", "T0") in tiers and ("constraint_parse", "T1") in tiers and ("explain", "T0") in tiers   # offline: no model, so code
     assert r["policy"]["passed"]
     assert r["plan"]["peak_kva"] <= SITE["contract_demand_kva"]
     assert "Projected saving" in r["explanation"]
