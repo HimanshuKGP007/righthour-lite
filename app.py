@@ -2298,7 +2298,7 @@ def act_on(text: str) -> None:
         if re.match(r"^(no|discard|cancel|don'?t|leave it|forget it)\b", t0):
             whatif_decide(False)
             return
-        ss.whatif = None                                          # a new instruction replaces the old what-if
+        # any other message keeps the what-if open; a new change replaces it
     if ss.confirm_rule:                                           # the agent asked "one-time or in future?"
         sc = _rule_scope(text)
         if sc != "ask" or re.match(r"^(just|only|once|no)\b", text.strip().lower()):
@@ -2368,7 +2368,7 @@ GOAL_WORDS = {"max_moves": lambda v: "no limit on machines moved" if v is None e
 
 def chat_chips() -> list[str]:
     if ss.get("whatif"):
-        return ["Why?", "What if we keep the usual times?"]
+        return ["Why?"]
     if ss.get("confirm_rule"):
         return ["Just today", "From now on"]
     if pending and pending.get("type") == "choose_relaxation":
