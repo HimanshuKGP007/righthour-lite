@@ -308,6 +308,12 @@ def relaxation_options(ctx: Context, st: dict | None = None) -> list[dict]:
     for m in list(ctx.machines_cfg["shiftable"]) + _extras(st):
         e, l = m.get("relax_earliest_h"), m.get("relax_latest_finish_h")
         note = m.get("relax_note", "")
+        if not isinstance(e, (int, float)) and not isinstance(l, (int, float)):
+            # nothing set: the agent suggests a small stretch of the hours itself (a new order 3 h earlier or 4 h later,
+            # a machine 2 h either way). Only tested options that make a valid plan are shown, and the manager decides.
+            new = m.get("baseline_start_h") is None
+            e, l = max(0, m["earliest_h"] - (3 if new else 2)), min(24, m["latest_finish_h"] + (4 if new else 2))
+            note = note or "suggested by the agent: the crew's hours change, so check with the shift lead"
         if isinstance(e, (int, float)) and e < m["earliest_h"]:
             opts.append({"id": f"{m['id']}:early", "kind": "window", "machine": m["id"], "field": "earliest_h", "value": e,
                          "text": f"Start {m['name']} as early as {hhmm(e)}", "side_cost_note": note})

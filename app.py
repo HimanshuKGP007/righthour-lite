@@ -537,7 +537,7 @@ def on_new_plan(st_: dict, pend: dict | None) -> None:
         elif prev["schedule"] != cur["schedule"] or prev["weather"] != cur["weather"]:
             cause = ("Clouds tomorrow." if cur["weather"] == "Cloudy day" else "Clear sky tomorrow." if cur["weather"] == "Clear sky" else "New weather forecast.") \
                 if prev["weather"] != cur["weather"] else ("Your change is in." if prev["pins"] != cur["pins"] else
-                                                           "Your rule is in." if prev["rules"] != cur["rules"] else
+                                                           "Your rule is in." if prev["rules"] != cur["rules"] or prev["today"] != cur["today"] else
                                                            "New rules and limits." if prev["proc"] != cur["proc"] else
                                                            "New plant settings." if prev["cfg"] != cur["cfg"] else "Re-planned.")
             say("agent", f"{cause} I moved {moved}. Still {save}." if mv else f"{cause} Everything stays at its usual time.")
@@ -555,7 +555,9 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
     ss.autoran, ss.trigger_plan = True, False
     with st.spinner("Agents working: forecasting, reading the tariff, solving..."):
         try:
+            dr = ss.get("day_relax") or {}
             ctx = Context(SITE, ss.tariff, MACH, ss.hist, goal=goal or "Cut tomorrow's bill.", cloudy=WEATHER[weather], plan_date=plan_date,
+                          relaxation=dr.get("id") if dr.get("date") == str(plan_date) else None,
                           notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process={**ss.proc, **ASK.parse_goal(goal), "pins": dict(ss.pins), "today_rules": list(ss.today_rules), "skip_rules": list(ss.get("today_skip", []))})
             graph, cfg, state, pending = start(ctx)
             ss.whatif, ss.show_why, ss.open_change = None, False, False
@@ -578,8 +580,13 @@ def do_resume(value, echo: bool = True) -> None:
         opt = next((o for o in opts if o["id"] == value), None)
         if echo:
             say("manager", f"Yes. {opt['text'] if opt else 'Relax that rule'}.")
+        ss.day_relax = {"date": str(plan_date), "id": value}      # remembered for this day, so a re-plan does not ask again
         sav = r["state"].get("saving_rs")
-        say("agent", f"Done. {('Saves about ' + rs(round(sav, -2)) + ' today.') if sav else 'The order fits now.'}")
+        if sav:
+            say("agent", f"Done. Saves about {rs(round(sav, -2))} today.")
+        else:
+            say("agent", "Done. The order fits now. No saving is claimed for today: without moving other machines the order "
+                         "could not fit under the contract demand at all, so there is no like-for-like usual schedule to compare with.")
     elif value.get("action") == "approve":
         if echo:
             say("manager", "Approve." + (f" {value.get('note')}" if value.get("note") else ""))
@@ -2323,7 +2330,8 @@ def _apply(acts: list[dict], text: str, sim: bool = False) -> list[str]:
             ss.w_weather = a["value"]
             done.append(f"weather: {a['value'].lower()}")
         elif t == "order":
-            ss.notes_rows = ss.notes_rows + [{"Name": "Order from chat", "Kind": "New order", "Note, in plain words": a["text"],
+            nm = re.search(r"\border\b\s*(?:for\s+(?:the\s+|a\s+)?)?[:\-]?\s*(?:the\s+|a\s+)?([a-z][a-z \-]{1,40}?)(?:,|\.|\s+for\b|\s+\d|$)", a["text"], re.I)
+            ss.notes_rows = ss.notes_rows + [{"Name": (nm.group(1).strip().capitalize() if nm else "New order"), "Kind": "New order", "Note, in plain words": a["text"],
                                               "Could start as early as": None, "Could finish as late as": None, "Side cost if relaxed": ""}]
             ss.notes_ver += 1
             done.append("new order added")
@@ -2532,8 +2540,8 @@ def why_not_moved(mid: str, st_: dict, names: dict) -> str:
     if every.get(mid) in set(prob.get("idle", [])) or (mid in every and mid not in {m["id"] for m in prob.get("shiftable", [])}):
         return f"**{every.get(mid, 'That machine')}** does not run on this day, so the plan does not schedule it."
     m = next((x for x in prob.get("shiftable", []) if x["id"] == mid), None)
-    if not m or "plan" not in st_:
-        return "Generate a plan first."
+    if not m or "schedule" not in (st_.get("plan") or {}):
+        return (f"**{m['name']}** keeps its usual time: today's plan keeps the usual schedule." if m else "Generate a plan first.")
     if mid in ss.pins:
         return f"**{m['name']}** stays at {A.hhmm(st_['plan']['schedule'][mid])} because you kept it there."
     h = st_["plan"]["schedule"][mid]
@@ -2586,8 +2594,22 @@ def act_on(text: str) -> None:
     acts = ACT.merge(acts, ACT.propose_offline(text, ms, waiting))
     ok, bad = ACT.check(acts, ms, spec, waiting, options)
     changes = [x for x in ok if x["type"] not in ("approve", "reject", "relax", "why", "answer")]
-    if changes:                                   # never change the plan straight away: try it first, then the manager decides
-        simulate_and_offer(changes, text, how, bad)
+    if changes:
+        rejecting = any(x["type"] == "reject" for x in ok)
+        if (rejecting and all(c["type"] == "rule" for c in changes)) or all(c["type"] == "weather" for c in changes):
+            # REMEMBERS / REACTS (deck): a "no" with its reason, or news about the weather, is a fact, not a preference to try:
+            # the agent acts on it at once, plans again and reports what changed
+            done = _apply(changes, text)
+            ss.audit.log(_rid(), "Plant manager", "reject" if rejecting else "setup_saved", tier="human", mode="human", reason=text,
+                         detail={"applied": done, "via": "acted on at once"})
+            ss.trigger_plan = True
+            if rejecting:
+                say("agent", "Saved as a rule: " + "; ".join(d.replace("for this day only: ", "").replace("new rule, from now on: ", "") for d in done)
+                    + (". For today" if ss.confirm_rule else "") + ". Planning again with it.")
+                if ss.confirm_rule:
+                    say("agent", f"Is it a one-time thing, or should I expect it in future? Answer “just today” or “from now on”.")
+            return
+        simulate_and_offer(changes, text, how, bad)   # anything else: try it first, then the manager decides
         return
     why_done: set = set()
     for a in ok:                                                  # actions on the plan that is waiting

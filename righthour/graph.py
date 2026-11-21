@@ -54,7 +54,7 @@ def build_graph(ctx: Context):
         return node
 
     def decide(state: RunState) -> dict:
-        ctx.relaxation = state.get("relaxation")
+        ctx.relaxation = state.get("relaxation") or ctx.relaxation     # a choice made earlier the same day stays
         return step_decide(ctx, {**state, "steps": []})
 
     def ask_manager(state: RunState) -> dict:
