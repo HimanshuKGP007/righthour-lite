@@ -165,6 +165,7 @@ def check_approved_plan() -> None:
 NAV = [("Today", ":material/today:", "Plan the day, see the saving, approve"),
        ("Upload data", ":material/upload_file:", "Meter readings, production notes, price orders"),
        ("Plant setup", ":material/precision_manufacturing:", "Machines, crew rules, prices, solar, AI model"),
+       ("Guardrails", ":material/shield:", "Every guardrail, where it comes from, and whether it held"),
        ("Control room", ":material/account_tree:", "The agents' diagram, box by box"),
        ("Next-day check", ":material/fact_check:", "Real saving against the plan"),
        ("History", ":material/history:", "Every agent step and decision")]
@@ -442,7 +443,7 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
     with st.spinner("Agents working: forecasting, reading the tariff, solving..."):
         try:
             ctx = Context(SITE, ss.tariff, MACH, ss.hist, goal=goal or "Cut tomorrow's bill.", cloudy=WEATHER[weather], plan_date=plan_date,
-                          notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process={**ss.proc, "pins": dict(ss.pins)})
+                          notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process={**ss.proc, **ASK.parse_goal(goal), "pins": dict(ss.pins)})
             graph, cfg, state, pending = start(ctx)
             ss.run = {"ctx": ctx, "graph": graph, "cfg": cfg, "state": state, "pending": pending, "cfg_version": ss.cfg_version,
                       "proc": dict(ss.proc), "price_rules": dict(ss.get("price_rules", PRICE_RULES))}
@@ -486,7 +487,7 @@ def do_resume(value, echo: bool = True) -> None:
 SETTINGS = [("Small AI model", "model llm small t1 groq claude grok key provider", "router"),
             ("Large AI model", "model llm large t2 groq claude grok key provider", "router"),
             ("AI provider and key", "api key groq claude grok offline connect test", "router"),
-            ("Guardrails", "guardrail safety rules limits policy", "guard"),
+            ("Guardrails", "guardrail safety rules limits policy source", "guard"),
             ("Safety margin below contract demand", "margin contract demand kva headroom guardrail", "guard"),
             ("Never set a new monthly peak", "monthly peak max demand guardrail", "guard"),
             ("Most machines moved in a day", "moves disruption limit guardrail", "guard"),
@@ -1668,8 +1669,8 @@ def plan_tab_body() -> None:
             if pending and pending["type"] == "approval":
                 approval_controls("plan")
         with st.container(border=True):
-            card_title("chip", "Why this plan")
-            html(f"<p class='rh-p'>{state.get('explanation', '')}</p>")
+            card_title("chip", "Why this plan", "Every number comes from the tariff and the solver")
+            why_plan()
         checks = state.get("policy", {}).get("checks", [])
         with st.container(border=True):
             bad = sum(not c["ok"] for c in checks)
@@ -1726,7 +1727,7 @@ def log_tab() -> None:
          f"<span><span class='rh-chip human'>human</span>{n['human']} a person decided</span></div>"
          f"<div class='rh-note'>Model spend for this run: <b class='num' style='color:{INK}'>${spend:.4f}</b> "
          f"({'measured' if LLM.live else 'estimated from typical token use'}; "
-         + ", ".join(f"<span class='mono'>{m}</span> ${PRICES[m][0]} / ${PRICES[m][1]}" for m in MODELS[LLM.provider].values())
+         + ", ".join(f"<span class='mono'>{m}</span> ${PRICES.get(m, (0, 0))[0]} / ${PRICES.get(m, (0, 0))[1]}" for m in MODELS[LLM.provider].values())
          + " per million tokens)</div></div>")
     body = "".join(
         f"<tr><td class='m'>{r['ts'][11:19]}</td><td>{chip(r['tier'])}</td><td>{escape(str(r['agent']))}</td><td><b>{escape(words(r['action']))}</b></td>"
@@ -2021,14 +2022,26 @@ def handle_chat(preset: str | None = None) -> None:
         if not hit and not mid:
             say("agent", st_.get("explanation") or "Generate a plan first.")
     else:
-        say("agent", ask_answer(text))
+        g = ASK.parse_goal(text)
+        if g:                                                     # words that change how the agent plans
+            ss.proc = {**ss.proc, **g}
+            say("agent", "Understood. " + "; ".join(GOAL_WORDS[k](v) for k, v in g.items()) + ". Planning again.")
+            ss.audit.log(_rid(), "Plant manager", "setup_saved", tier="human", mode="human", reason=text, detail=g)
+            ss.trigger_plan = True
+        else:
+            say("agent", ask_answer(text))
+
+
+GOAL_WORDS = {"max_moves": lambda v: "no limit on machines moved" if v is None else f"move at most {v} machine(s)",
+              "margin_pct": lambda v: f"keep a {v}% margin under the contract", "block_new_peak": lambda v: "never set a new monthly peak",
+              "min_saving_rs": lambda v: f"only change the schedule for {rs(v)} or more"}
 
 
 def chat_chips() -> list[str]:
     if pending and pending.get("type") == "choose_relaxation":
         return ["Yes, that is fine", "Why?"]
     if pending and pending.get("type") == "approval":
-        return ["Approve", "Why these moves?", "Clouds tomorrow", "No. The press line needs the night crew."]
+        return ["Approve", "Why these moves?", "Fewer moves, please", "Clouds tomorrow", "No. The press line needs the night crew."]
     return ["What's the status?", "How much have we saved?", "Clouds tomorrow"]
 
 
@@ -2110,6 +2123,30 @@ def work_order_card() -> None:
                            key="wo_today", icon=":material/download:", width="stretch")
 
 
+def why_plan() -> None:
+    """The reasoning, machine by machine: what moved, between which price bands, what it saves, and why the rest stayed."""
+    prob, sched = state["problem"], state["plan"]["schedule"]
+    per = A.machine_savings(prob, state["baseline"]["schedule"], sched) if state["baseline"].get("feasible") else {}
+    types = {h: b["type"] for b in ss.tariff["slots"] for h in range(int(b["start_h"]), int(b["end_h"]))}
+    rows = ""
+    for m in prob["shiftable"]:
+        b, h = m.get("baseline_start_h"), sched[m["id"]]
+        if b is not None and h != b:
+            rows += (f"<tr><td><b>{escape(m['name'])}</b></td><td>{types.get(b, '')} {b:02d}:00 → {types.get(h, '')} {h:02d}:00</td>"
+                     f"<td class='r' style='color:var(--green)'><b>{rs(per.get(m['id'], 0))}</b></td></tr>"
+                     f"<tr><td colspan='3' class='rh-note'>{escape(A.why_moved(prob, m, h))}</td></tr>")
+        else:
+            lim = "kept by you" if m["id"] in ss.pins else ("its window has no cheaper hour" if b is not None else "new order, placed at the cheapest fit")
+            rows += f"<tr><td>{escape(m['name'])}</td><td>stays {h:02d}:00</td><td class='rh-note'>{lim}</td></tr>"
+    for f in state.get("fixed", []):
+        rows += f"<tr><td>{escape(f['name'])}</td><td>{f['start_h']:02d}:00–{f['end_h']:02d}:00</td><td class='rh-note'>fixed batch, never moved</td></tr>"
+    g = {k: ss.proc.get(k) for k in ("margin_pct", "block_new_peak", "max_moves", "min_saving_rs")}
+    gl = [f"{g['margin_pct']}% margin" if g["margin_pct"] else "", "no new monthly peak" if g["block_new_peak"] else "",
+          f"at most {g['max_moves']} moved" if g["max_moves"] is not None else "", f"min saving {rs(g['min_saving_rs'])}" if g["min_saving_rs"] else ""]
+    html(f"<table class='rh-log'><tbody>{rows}</tbody></table><div class='rh-note' style='margin-top:6px'>Peak {state['plan']['peak_kva']:.0f} kVA "
+         f"of {SITE['contract_demand_kva']} contract. Guardrails used: {', '.join(x for x in gl if x) or 'the standard ones'}.</div>")
+
+
 def page_today() -> None:
     page_header("Today's plan", escape(str(SITE['name'])))
     next_step(state if run else None, pending, ss.verify is not None)
@@ -2188,6 +2225,57 @@ def page_setup() -> None:
              "Code does every calculation. Offline mode needs no key.</p>")
         with st.container(border=True, key="modelbox"):
             model_controls()
+
+
+# (name, limit key to edit or None, where it comes from, how the rule check names it, fixed value text)
+GUARDRAILS = [
+    ("Never above the contract demand", None, "Your supply contract · Plant setup → Prices and contract", ("Max demand",), lambda: f"{SITE['contract_demand_kva']:,} kVA"),
+    ("Safety margin under the contract", "margin_pct", "You · here, Control room or chat (“keep a 10% margin”)", ("Max demand",), None),
+    ("Never set a new monthly peak", "block_new_peak", "You · this month's max from your bill", ("Monthly max",), None),
+    ("Most machines moved in a day", "max_moves", "You · or chat (“fewer moves”)", ("At most",), None),
+    ("Smallest saving worth a change", "min_saving_rs", "You · or chat (“save at least ₹2,000”)", ("Saving worth",), None),
+    ("Every machine inside its hours", None, "Machines table · Control room → Factory systems", (" inside ",), lambda: f"{len(MACH['shiftable'])} machines"),
+    ("Crew rules hold", None, "Crew rules table · Control room → Factory systems", ("not at the same time",), lambda: f"{sum(r['type'] == 'no_overlap' for r in MACH['rules'])} rule(s)"),
+    ("Fixed batches never move or stop", None, "Today's production notes · Upload data", ("untouched",), lambda: f"{len(state.get('fixed') or [])} batch(es)"),
+    ("Rules learned from your “no”", None, "Your rejections · Factory memory", (), lambda: f"{len(ss.cfg['machines'].get('learned_rules', []))} rule(s)"),
+    ("Peak price at least × normal", "peak_x", "Rule 8A, Electricity (Rights of Consumers) Rules 2023", (), None),
+    ("Solar discount at least", "solar_off", "Rule 8A, Electricity (Rights of Consumers) Rules 2023", (), None),
+    ("Peak at least × solar", "spread_x", "Deck: 1.2 ÷ 0.8 = 1.5×", (), None),
+    ("Meter spikes flagged", "spike_x", "Data quality · CEA metering rules", (), None),
+    ("Lowest normal power factor", "pf_min", "Data quality · CEA metering rules", (), None),
+    ("Small AI tries before the large one", "small_tries", "AI router · deck slide 6", (), None),
+    ("Names removed before any AI", "redact_names", "DPDP Act 2023 · deck slide 12", (), None),
+    ("A person approves every plan", None, "RightHour design · MeitY AI Guidelines 2025", (), lambda: "always"),
+    ("AI never writes a number", None, "Number guard in code · deck slide 6", (), lambda: "always"),
+    ("Uploads read only as data", None, "Prompt-injection guard · deck slide 12", (), lambda: "always"),
+]
+
+
+def page_guardrails() -> None:
+    page_header("Guardrails", "Every limit the agent must keep: change it, see where it comes from, see whether it held.")
+    update_plan_bar("gr")
+    checks = (state.get("policy") or {}).get("checks", []) if run else []
+    spec = {x[1]: x for x in LIMITS}
+    head = st.columns([2.2, 2.4, 2.6, 1.1])
+    for c, t in zip(head, ["Guardrail", "Setting", "Comes from", "This run"]):
+        c.markdown(f"<div class='rh-sub' style='margin:4px 0'>{t}</div>", unsafe_allow_html=True)
+    for name, key, src, match, fixed in GUARDRAILS:
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns([2.2, 2.4, 2.6, 1.1], vertical_alignment="center")
+            c1.markdown(f"<b>{escape(name)}</b>", unsafe_allow_html=True)
+            with c2:
+                if key in spec:
+                    sp = spec[key]
+                    limit_widget(sp, "gr")
+                else:
+                    html(f"<div class='rh-lockgrid' style='grid-template-columns:1fr;margin:0'><div>{ICONS['lock']}<span>{escape(fixed())}</span></div></div>")
+            c3.markdown(f"<div class='rh-note'>{escape(src)}</div>", unsafe_allow_html=True)
+            hit = [x for x in checks if any(x["rule"].startswith(m) or m in x["rule"] for m in match)] if match else []
+            if not hit:
+                c4.markdown("<span class='rh-tag'>—</span>", unsafe_allow_html=True)
+            else:
+                ok = all(x["ok"] for x in hit)
+                c4.markdown(f"<span class='rh-tag {'ok' if ok else 'ask'}'>{'held' if ok else 'broken'}</span>", unsafe_allow_html=True)
 
 
 def page_control_room() -> None:
@@ -2336,5 +2424,5 @@ sidebar()
 with st.container(key="askfab"):
     if st.button("Ask RightHour", icon=":material/forum:", type="primary", key="ask_open"):
         ask_dialog()
-{"Today": page_today, "Upload data": page_data, "Plant setup": page_setup, "Control room": page_control_room,
+{"Today": page_today, "Guardrails": page_guardrails, "Upload data": page_data, "Plant setup": page_setup, "Control room": page_control_room,
  "Next-day check": page_check, "History": page_history}[ss.view]()
