@@ -25,64 +25,28 @@ offline templates and parsers, and every log row says which mode ran. Numbers ne
 
 ## The screens
 
-The left menu has one screen per job:
+When the app opens it tests the AI model. If the model answers, the plan starts at once; if not, a setup window asks for the provider and key, with **Test connection**.
 
-- **Today:** pick the day, the solar forecast and the goal, press **Generate plan**. See the saving, the max demand and the schedule chart. Write a note, then approve or reject. **Change the plan** lets you set start times and tick **Keep** for machines that must not move; **Update plan** plans again around them. Every decision and note goes to the audit trail. The work order appears here after approval.
-- **Upload data:** meter readings (upload a CSV, or use the steel plant data or the sample), data health, the live feed, the day's production notes, and a new price order (paste it or upload a .txt).
-- **Plant setup:** machines and crew rules, prices and contract, rooftop solar, and the AI model.
-- **Control room:** the agents' design diagram, lit up from the run. Click a box. A panel opens with **Results** (its numbers, charts and steps), **Controls** (every setting of that box) and **Activity** (what it did, in plain words). Every setting in the app can be reached from a box. **Guardrails** are set here: a safety margin under the contract demand, never set a new monthly peak, the most machines moved in a day, and the smallest saving worth a change. The optimiser obeys them and the rule check enforces them.
+The left menu has one screen per job. At the top: **sign in** to a plant (plant code and a passphrase of 8+ characters) and **search settings**.
 
-**Search settings** at the top of the left menu finds any setting (for example "small model", "margin", "solar") and opens its box in the Control room.
-- **Next-day check:** compare the real meter readings with the approved plan, and see the savings history.
+- **Today:** pick the day, the solar forecast and the goal. A new plan is made by itself when any of them changes. The step line shows where the day is (Goal, Data, Analysis, Decision, Problem, Action, Learning). The plan box shows each move on a 24-hour strip with its own saving, what is off today, and four buttons: **Approve**, **Edit** (start times and Keep, under the plan box), **Reject**, **Ask why** (one answer under the plan box). Beside it, **Talk to the agent**.
+- **Upload data:** meter readings (CSV, the steel plant data or the sample), data health, the live feed, the day's production notes, a new price order, and the free bill check.
+- **Plant setup:** machines (with the days each one **runs on**), crew rules, prices and contract, plant holidays, rooftop solar, the AI model, factory templates, and **Keep your settings**.
+- **Guardrails:** every limit the agent must keep, one row each: where it comes from, its setting, and whether it held in this run. Includes the data checks.
+- **Control room:** the agents' design diagram, lit up from the run. Click a box for **Results**, **Controls** and **Activity**. **Factory memory** shows what the agent remembers for this plant, where it came from, and buttons to forget it. **All rules and limits** lists every setting.
+- **Next-day check:** compare the real meter readings with the approved plan; the forecast correction learns from the gap; the shared-savings split.
 - **History:** every agent step of this run, and the full audit trail.
 
-**The morning brief and the four moments (deck slides 4 and 7).** Today opens with the brief: "Move 2 machines. Save about ₹2,700", each move on a 24-hour strip with its own saving, ✓ all orders on time, ✓ under contract demand, and Approve, Edit, Reject, Ask why. Beside it, **Talk to the agent** holds the four moments:
-- *Re-plans:* when the work does not fit, the agent asks which rule may flex, with one-click answers.
-- *Explains:* "Why move the press line to 11 am?" "Power costs a third less then … No deadline moves." (computed from the tariff, not written by a model)
-- *Remembers:* reject with a reason, and the agent offers to save it as a rule (keep at usual time, never start before, always finish by). Every later plan obeys it. The rules are listed, and can be removed, in **Factory memory**.
-- *Reacts:* after any re-plan the agent says what changed and why ("Clouds tomorrow. I moved … Still saves ₹1,100.").
+**Talk to the agent (the four moments, deck slide 7).** Type anything: an order, a fact ("the panels are dusty", "short on night staff"), a limit ("reduce machine switches to 1"), a question. The AI model turns it into actions; code checks every action; the agent **tries the change first** and shows the saving now and with the change, the moves and the peak. **Set as plan** (or "yes") uses it; **Discard** (or "no") drops it. A machine rule asks once: just today, or from now on. Without an AI key, plain code reads the common phrasings.
 
-**Type anything.** The conversation box takes free text: "Approve", "No. The press line needs the night crew." (rejects and saves a rule), "Never start the oven before 8 pm", "Run the press line at 10 am", "Clouds tomorrow", "New order: grinding line, 400 kW for 4 hours…", "Yes, 10 am is fine", "Why move the compressors?", or any question. Plain code reads these offline; with an AI key the small model reads free wording and code checks every field before anything changes.
+**Data check** looks at: missing readings and the longest gap, repeated timestamps, readings off the 15-minute mark, negatives, spikes, a stuck meter, wrong units against the contract, holidays and shutdowns (against the same weekday), part days, power factor, and how recent the data is. Each limit is on the Guardrails screen and in the Check box.
 
-Also from the deck: send the work order to the shift lead (logged), a **free bill check** on Upload data, the **shared-savings split** on Next-day check, **factory templates** (foundry, plastics, textiles, cold storage), names removed before any AI sees the data, and **Keep your settings** (download and load) on Plant setup.
+**Numbers never come from a model.** The optimiser (OR-Tools) does the maths. Any AI text (the plan explanation, Ask RightHour) is checked: a number not in the facts makes the model try again, then plain code answers.
 
-**Where data is kept on the hosted app.** Each browser tab has its own session: notes, kept machines, chat and rules-and-limits changes live there and end with the tab. Saved plant settings go to `plant_config.json` and the audit trail to `righthour_audit.sqlite` on the server's disk: shared by everyone using the app, and cleared when Streamlit restarts or redeploys. Use **Plant setup → Keep your settings** to keep your own copy.
+**Ask RightHour** (bottom right, every screen) answers from the facts in the app; **Full screen** makes it bigger. Times show the plant's local time (`RIGHTHOUR_TZ`, default Asia/Kolkata).
 
-**Ask RightHour** (bottom right, on every screen) answers questions about the status, savings, history and the plan, from the facts in the app. With an AI key it uses the large model and can answer any question. Offline, plain code answers the common ones.
+**Where data is kept on the hosted app.** A signed-in plant's memory and audit trail are on the server, so a new tab or the next day loads them after sign-in. The shared demo plant uses `plant_config.json` and `righthour_audit.sqlite`. Streamlit Cloud clears the server's disk on a restart or redeploy: download **Plant setup → Keep your settings** first and load it back after.
 
-## How it maps to the doc
-
-| Doc (Section 8) | Here |
-|---|---|
-| Data & Forecast agent: validate CSV, forecast 24 h base load (moving average), solar from Open-Meteo | `agents.step_data`, `data.py`: same-weekday 4-week average; Open-Meteo with a clear-sky fallback |
-| Tariff & Constraints agent: tariff text to JSON slots (LLM + schema + validator); constraints; conflicts | `parse_tariff` (T2 once, cached by fingerprint, person signs off); `parse_note` (T1, retry, escalate); Rule 8A checks |
-| Orchestrator / Explainer: optimiser, re-plan if no valid schedule, policy checks, explanation, approval | `graph.py` (LangGraph with two interrupts) + `step_decide/problem/action` |
-| Tools `forecast_load()`, `get_solar_forecast()`, `parse_tariff()`, `optimise_schedule()`, `verify_savings()`, `write_report()` | `data.forecast_load`, `data.solar_forecast`, `agents.parse_tariff`, `optimiser.optimise_schedule` (OR-Tools MILP), `agents.verify_and_learn`, explanation + audit CSV |
-| Model router `route(task, attempt, input_size)` with a log | `router.route` (T0/T1/T2), logged with tokens and cost |
-| SQLite audit log | `audit.py`, `righthour_audit.sqlite` |
-| Streamlit UI in the deck's colours | `app.py`, `.streamlit/config.toml`, tokens from Section 4.2 |
-
-## The demo script (Section 8.4), as the app runs it
-
-1. **Use sample** (or load the UCI CSV), then **Generate plan**. The chart shows evening load in the peak band.
-2. **Agent log** tab: forecast (T0), tariff from the library (no model call), constraints parsed (T1), optimiser (T0),
-   explanation (T1). No large-model call.
-3. **Plan**: compressors and press line move from 17:00–21:00 to 11:00–15:00, furnace untouched, **₹2,704 a day**.
-4. The explanation reads: "Moved 800 kVAh from peak (₹10.55) to solar hours (₹7.17). Max demand unchanged; all deadlines met."
-5. Turn on **Add the new grinding order** and generate again. There is no valid schedule. The agent tests each flexible
-   rule (T2) and asks which one to relax. Choose, and it re-plans.
-6. **Edit the plan before approving**: set the grinding line to 10:00. The policy check blocks it (contract demand).
-7. **Approve plan**, then **Verify and learn**, then **Run next-day check**. Pick "Press line started 3 hours late"
-   to show a verified saving below the projection and the forecast correction the agent learns.
-
-Extra moment from Section 2.2: **Clouds forecast for tomorrow** lowers the solar estimate and the agent re-plans.
-
-## Assumptions (all illustrative, in `data/`)
-
-- Tariff: peak ₹10.55 and solar ₹7.17 are the deck's unverified rates. Normal ₹8.79 and the demand charge of ₹600
-  per kVA a month are team assumptions. Replace them from MERC Case No. 75 of 2025.
-- Site: contract demand 1,000 kVA, this month's maximum 900 kVA, 150 kWp rooftop solar, 300 working days a year.
-- Machines and windows: five shiftable loads, one furnace batch (from a daily operator note), one new order.
 - Scheduled machines are taken at a power factor near 1, the worked example's assumption. Base load uses metered PF.
 - Starts are on the hour. A tie-break of a few paise keeps machines at their usual time unless moving saves money,
   and centres moved runs in the solar window.

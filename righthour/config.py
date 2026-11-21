@@ -1,4 +1,4 @@
-"""The plant's own settings: site, tariff, machines and crew rules. Edited in the Setup tab, saved to plant_config.json.
+"""The plant's own settings: site, tariff, machines and crew rules. Edited on Plant setup. A signed-in plant keeps them in its own memory; the shared demo plant uses plant_config.json.
 
 Without a saved file the app starts from the demo defaults in data/*.json.
 """
@@ -30,7 +30,7 @@ def defaults() -> dict:
 
 
 def _normalise(cfg: dict) -> dict:
-    """Machine ids are always the slug of the machine's name, so the Setup tables and the rules stay in step."""
+    """Machine ids are always the slug of the machine's name, so the Plant setup tables and the rules stay in step."""
     mapping, taken = {}, set()
     for m in cfg["machines"]["shiftable"]:
         new = slug(m["name"], taken)

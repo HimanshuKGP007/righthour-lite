@@ -697,28 +697,33 @@ def step_strip(state: dict | None, pending: dict | None, verified: bool) -> None
     replanned = any(r["action"] == "relax_rule" for r in (ss.audit.rows(ss.run["ctx"].run_id) if ss.run else []))
     asking = bool(pending and pending.get("type") == "choose_relaxation")
     items = [
-        ("Goal", "done" if s else "wait", _short(s.get("goal", "Set a goal")) if s else "Give the agent a goal"),
-        ("Data", "done" if s.get("forecast") else "wait", "Meter, tariff, weather, production" if s.get("forecast") else "Gathers its own data"),
-        ("Analysis", "done" if s.get("fixed") is not None and s.get("forecast") else "wait", "Forecasts, tariff, constraints"),
-        ("Decision", "done" if s.get("plan") else "wait", "Calls the solver" if s.get("plan") else "Invokes the optimiser"),
-        ("Problem", "alert" if asking else ("done" if replanned else "wait"),
-         "Asks which rule can flex" if asking else ("Conflict resolved" if replanned else "Only if rules conflict")),
+        ("Goal", "done" if s else "wait", _short(s.get("goal", "Set a goal"), 22) if s else "Give it a goal"),
+        ("Data", "done" if s.get("forecast") else "wait", "Meter, prices, weather"),
+        ("Analysis", "done" if s.get("fixed") is not None and s.get("forecast") else "wait", "Forecast and rules"),
+        ("Decision", "done" if s.get("plan") else "wait", "Solver finds the plan"),
+        ("Problem", "alert" if asking else ("done" if replanned else ("skip" if s.get("plan") else "wait")),
+         "Asks which rule can flex" if asking else ("Conflict resolved" if replanned else ("Not needed" if s.get("plan") else "Only if rules clash"))),
         ("Action", "active" if pending and pending.get("type") == "approval" else ("ok" if status == "work_order_issued" else "wait"),
-         "Awaiting your approval" if pending and pending.get("type") == "approval" else
-         ("Approved, work order issued" if status == "work_order_issued" else "Plan, savings, approval")),
-        ("Learning", "ok" if verified else "wait", "Actual vs expected checked" if verified else "Next-day check"),
+         "Approve or reject" if pending and pending.get("type") == "approval" else
+         ("Work order issued" if status == "work_order_issued" else "You approve")),
+        ("Learning", "ok" if verified else "wait", "Saving checked" if verified else "Next-day check"),
     ]
-    word = {"done": "Done", "ok": "Done", "alert": "Your turn", "active": "Your turn", "wait": "Waiting"}
-    cells = "".join(f"<li class='{c}' title='{escape(d)}'><div class='top'><span class='no'>{i}</span><span class='sw'>{word[c]}</span></div>"
-                    f"<div class='t'>{t}</div><div class='s'>{d}</div></li>" for i, (t, c, d) in enumerate(items, 1))
-    html(f"<ol class='rh-steps' aria-label='Steps for the day'>{cells}</ol>")
+    word = {"done": "Done", "ok": "Done", "skip": "Skipped", "alert": "Your turn", "active": "Your turn", "wait": "Next"}
+    cells, prev_on = "", True
+    for i, (t, c, d) in enumerate(items, 1):
+        on = prev_on and c != "wait"                     # the line fills up to the furthest step reached
+        dot = ICONS["check"] if c in ("done", "ok") else str(i)
+        cells += (f"<li class='{c}{' on' if on else ''}' title='{escape(d)}'><span class='dot'>{dot}</span>"
+                  f"<span class='t'>{t}</span><span class='w'>{word[c]}</span><span class='s'>{escape(d)}</span></li>")
+        prev_on = on
+    html(f"<ol class='rh-stepper' aria-label='Steps for the day'>{cells}</ol>")
 
 
 def next_step(state: dict | None, pending: dict | None, verified: bool) -> None:
     """One sentence that says what to do now. The class sees the loop; the manager sees the next action."""
     status = (state or {}).get("status", "")
     if ss.hist is None:
-        cls, lbl, msg = "", "Start here.", "Load the meter data in <b>Inputs</b>, then press <b>Generate plan</b>."
+        cls, lbl, msg = "", "Start here.", "Load the meter data in <b>Upload data</b>, then press <b>Generate plan</b>."
     elif not state:
         cls, lbl, msg = "", "Next.", "Choose the day and the goal, then press <b>Generate plan</b>. The agent does the rest."
     elif pending and pending.get("type") == "choose_relaxation":

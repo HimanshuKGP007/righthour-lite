@@ -358,6 +358,25 @@ html, body, .stApp { font-size:14.5px; }
 .gr-fixed em { font-style:normal; font-size:11.5px; color:var(--muted); background:var(--navy-05); padding:1px 7px; border-radius:5px; }
 .gr-t { display:flex; justify-content:flex-end; }
 .gr-t .rh-tag svg { width:13px; height:13px; margin-right:4px; }
+/* the day's steps: one connected line of dots */
+.rh-stepper { display:flex; list-style:none; margin:6px 0 18px; padding:14px 8px 12px; background:#fff; border:1px solid var(--rule); border-radius:12px; }
+.rh-stepper li { flex:1 1 0; min-width:0; position:relative; display:flex; flex-direction:column; align-items:center; text-align:center; padding:0 4px; }
+.rh-stepper li::before { content:""; position:absolute; top:13px; right:50%; width:100%; height:2px; background:var(--rule); z-index:0; }
+.rh-stepper li:first-child::before { display:none; }
+.rh-stepper li.on::before { background:var(--green); }
+.rh-stepper .dot { position:relative; z-index:1; width:28px; height:28px; border-radius:50%; display:grid; place-items:center; background:#fff;
+  border:2px solid var(--navy-30); font-size:12.5px; font-weight:650; color:var(--muted); font-family:'IBM Plex Mono', monospace; }
+.rh-stepper .dot svg { width:15px; height:15px; }
+.rh-stepper li.done .dot, .rh-stepper li.ok .dot { background:var(--green); border-color:var(--green); color:#fff; }
+.rh-stepper li.active .dot, .rh-stepper li.alert .dot { background:var(--navy); border-color:var(--navy); color:#fff; box-shadow:0 0 0 5px var(--navy-10); }
+.rh-stepper li.skip .dot { border-style:dashed; color:var(--navy-30); }
+.rh-stepper .t { margin-top:8px; font-size:13.5px; font-weight:650; color:var(--ink); line-height:1.2; }
+.rh-stepper li.wait .t, .rh-stepper li.skip .t { color:var(--muted); font-weight:600; }
+.rh-stepper .w { font-size:11px; font-weight:650; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); margin-top:2px; }
+.rh-stepper li.done .w, .rh-stepper li.ok .w { color:var(--green); }
+.rh-stepper li.active .w, .rh-stepper li.alert .w { color:var(--red); }
+.rh-stepper .s { font-size:12px; color:var(--muted); margin-top:3px; line-height:1.3; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@media (max-width: 760px){ .rh-stepper .s, .rh-stepper .w { display:none; } .rh-stepper .t { font-size:12px; } }
 /* chat suggestions: small boxes that wrap */
 .st-key-chips button { min-height:28px !important; padding:3px 11px !important; border-radius:14px !important; }
 .st-key-chips button p { font-size:12.5px !important; white-space:nowrap; }
