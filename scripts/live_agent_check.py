@@ -22,7 +22,7 @@ from righthour import act as ACT, config as CFG, data as D  # noqa: E402
 from righthour.agents import PROCESS_DEFAULTS, Context  # noqa: E402
 from righthour.audit import AuditLog  # noqa: E402
 from righthour.graph import start  # noqa: E402
-from righthour.llm import LLMClient  # noqa: E402
+from righthour.llm import LLMClient, suggest_models  # noqa: E402
 from righthour.router import MODELS  # noqa: E402
 
 cfg, hist = CFG.defaults(), D.synthetic_history()
@@ -31,7 +31,8 @@ SPEC = {"margin_pct": ("slider", 0, 20, "Safety margin under the contract (%)"),
         "max_moves": ("optint", 0, len(MS), "Most machines moved in a day"), "min_saving_rs": ("money", 0, 1_000_000, "Smallest saving worth a change (₹)"),
         "solar_on": ("toggle", None, None, "Count rooftop solar"), "use_learning": ("toggle", None, None, "Use the learned correction")}
 llm = LLMClient("Groq")
-model = MODELS["Groq"]["T2"]
+model = suggest_models("Groq", llm.list_models())[1]     # the large model this key can really use
+print("large model:", model)
 
 
 def plan(proc, pins, rules, cloudy):
@@ -52,8 +53,9 @@ for msg in MESSAGES:
     try:
         acts, _ = ACT.propose_llm(llm, model, msg, MS, SPEC, "approval", [])
     except Exception as e:  # noqa: BLE001
-        print(f"\n> {msg}\n  model error: {e}")
-        continue
+        print(f"\n> {msg}\n  model error: {e} (plain code takes over)")
+        acts = None
+    acts = ACT.merge(acts, ACT.propose_offline(msg, MS, "approval"))
     ok, bad = ACT.check(acts, MS, SPEC, "approval", [])
     for a in ok:
         if a["type"] == "set":

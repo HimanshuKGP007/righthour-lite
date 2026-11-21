@@ -113,7 +113,7 @@ def parse_message(text: str, machines: list[dict], waiting: str | None) -> dict:
         out.update(intent="weather", kind="Clear sky")
     elif waiting == "choose_relaxation" and re.match(r"^(yes|ok|okay|sure|fine|go ahead|do it)\b", t) or (waiting == "choose_relaxation" and hour is not None and "fine" in t):
         out["intent"] = "relax_yes"
-    elif re.match(r"^(no|nope|reject|don'?t|do not|not)\b", t):
+    elif re.match(r"^(no|nope|reject)\b", t):
         out["intent"] = "reject"
         if mid:
             out["kind"] = _rule_kind(t, hour)

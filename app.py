@@ -1996,8 +1996,7 @@ def act_on(text: str) -> None:
         except Exception as e:  # noqa: BLE001
             ss.llm_err["text"] = str(e)
             acts = None
-    if acts is None:
-        acts = ACT.propose_offline(text, ms, waiting)
+    acts = ACT.merge(acts, ACT.propose_offline(text, ms, waiting))
     ok, bad = ACT.check(acts, ms, spec, waiting, options)
     done, replan = [], False
     for a in [x for x in ok if x["type"] not in ("approve", "reject", "relax", "why", "answer")]:
