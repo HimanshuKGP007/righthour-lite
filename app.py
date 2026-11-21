@@ -138,6 +138,7 @@ ss.setdefault("sel_box", "orch")
 ss.setdefault("proc", dict(PROCESS_DEFAULTS))
 ss.setdefault("today_rules", [])   # rules from chat that hold for this plan day only, until the manager says "from now on"
 ss.setdefault("confirm_rule", None)
+ss.setdefault("whatif", None)       # a change the agent tried but the manager has not yet set as the plan
 ss.setdefault("pins", {})
 persist()      # machines the manager pinned to an hour: {machine id: start hour}   # how each diagram box works; changed in the Control room
 ss.setdefault("scale_mode", True)
@@ -2156,8 +2157,148 @@ def _confirm_rule_answer(choice: str) -> None:
         say("agent", f"OK, only for this day: {A.learned_rule_text(lr, names)}. I will not use it in future plans.")
 
 
+_WHATIF_KEYS = ("proc", "price_rules", "pins", "today_rules", "w_weather", "w_goal", "notes_rows", "notes_ver", "cfg", "cfg_version", "confirm_rule")
+
+
+def _apply(acts: list[dict], text: str, sim: bool = False) -> list[str]:
+    """Applies checked actions to the plan inputs. sim=True: nothing is saved or logged (the what-if run)."""
+    spec, done = action_spec(), []
+    names = {m["id"]: m["name"] for m in ss.cfg["machines"]["shiftable"]}
+    for a in acts:
+        t = a["type"]
+        if t == "set":
+            k, v = a["key"], a["value"]
+            if spec[k][0] == "pct":
+                v = v / 100
+            if k in PRICE_RULES:
+                ss.price_rules = {**ss.get("price_rules", PRICE_RULES), k: v}
+            else:
+                ss.proc = {**ss.proc, k: v}
+            done.append(f"{spec[k][3].lower()}: {'no limit' if v is None else v if not isinstance(v, float) or spec[k][0] != 'pct' else f'{v * 100:g}%'}")
+        elif t == "pin":
+            ss.pins = {**ss.pins, a["machine"]: a["hour"]}
+            done.append(f"{names[a['machine']]} at {_ampm(a['hour'])}")
+        elif t == "unpin":
+            ss.pins = {k: v for k, v in ss.pins.items() if k != a["machine"]}
+            done.append(f"{names[a['machine']]} is free to move again")
+        elif t == "rule":
+            lr = {"machine": a["machine"], "kind": a["kind"], "hour": a["hour"], "reason": text, "ts": f"{dt.datetime.now():%Y-%m-%d %H:%M}"}
+            scope = _rule_scope(text)
+            if sim:
+                ss.today_rules = ss.today_rules + [lr]
+                done.append(A.learned_rule_text(lr, names))
+            elif scope == "always":
+                _save_rule_quiet(lr)
+                done.append("new rule, from now on: " + A.learned_rule_text(lr, names))
+            else:
+                ss.today_rules = ss.today_rules + [lr]
+                ss.audit.log(_rid(), "Plant manager", "one_time_rule", tier="human", mode="human", reason=text, detail=lr)
+                done.append("for this day only: " + A.learned_rule_text(lr, names))
+                if scope == "ask":
+                    ss.confirm_rule = lr
+        elif t == "window":
+            cfg = json.loads(json.dumps(ss.cfg))
+            cfg["machines"]["shiftable"] = [{**m, "earliest_h": a["earliest"], "latest_finish_h": a["latest"]} if m["id"] == a["machine"] else m
+                                            for m in cfg["machines"]["shiftable"]]
+            ss.cfg = cfg
+            if not sim:
+                save_plant_file(cfg)
+                ss.cfg_version += 1
+            done.append(f"{names[a['machine']]} may run {a['earliest']:02d}:00 to {a['latest']:02d}:00")
+        elif t == "weather":
+            ss.w_weather = a["value"]
+            done.append(f"weather: {a['value'].lower()}")
+        elif t == "order":
+            ss.notes_rows = ss.notes_rows + [{"Name": "Order from chat", "Kind": "New order", "Note, in plain words": a["text"],
+                                              "Could start as early as": None, "Could finish as late as": None, "Side cost if relaxed": ""}]
+            ss.notes_ver += 1
+            done.append("new order added")
+        elif t == "goal":
+            ss.w_goal = a["text"]
+            done.append(f"goal: “{a['text']}”")
+    return done
+
+
+def _plan_summary(st_: dict) -> dict:
+    plan = st_.get("plan") or {}
+    return {"status": st_.get("status"), "saving": st_.get("saving_rs"), "schedule": dict(plan.get("schedule") or {}),
+            "peak": plan.get("peak_kva"), "cost": plan.get("total_rs"),
+            "usual": {m["id"]: m.get("baseline_start_h") for m in (st_.get("problem") or {}).get("shiftable", [])},
+            "names": {m["id"]: m["name"] for m in (st_.get("problem") or {}).get("shiftable", [])}}
+
+
+def simulate_and_offer(acts: list[dict], text: str, how: str, bad: list[str]) -> None:
+    """The what-if: apply the change to a copy of the inputs, run the whole agent pipeline on it, show the result, then undo.
+    The manager then presses Set as plan (or says yes) to make it the plan."""
+    snap = {k: json.loads(json.dumps(ss[k], default=str)) if k in ("cfg", "proc", "notes_rows") else ss.get(k) for k in _WHATIF_KEYS}
+    try:
+        done = _apply(acts, text, sim=True)
+        wgoal = ss.get("w_goal") or goal
+        ctx_ = Context(ss.cfg["site"], ss.tariff, ss.cfg["machines"], ss.hist, goal=wgoal or "Cut tomorrow's bill.",
+                       cloudy=WEATHER[ss.w_weather], plan_date=plan_date, notes=notes_for_run(), bias=ss.bias,
+                       llm=LLMClient("Offline"), audit=AuditLog(":memory:"),
+                       process={**ss.proc, **ASK.parse_goal(wgoal), "pins": dict(ss.pins), "today_rules": list(ss.today_rules)})
+        _, _, st_new, pend_new = start(ctx_)
+        new = _plan_summary(st_new)
+    except Exception as e:  # noqa: BLE001
+        new, done = {"error": str(e)}, done if "done" in locals() else []
+    finally:
+        for k, v in snap.items():
+            ss[k] = v
+    old = _plan_summary((ss.run or {}).get("state") or {})
+    ss.whatif = {"acts": acts, "text": text, "done": done, "new": new}
+    ss.audit.log(_rid(), "Orchestrator", "what_if", tier="T0", mode="code", reason=text,
+                 detail={"actions": acts, "by": how, "saving_now": old.get("saving"), "saving_if": new.get("saving"), "status_if": new.get("status")})
+    if "error" in new:
+        say("agent", f"I tried it ({'; '.join(done)}), but no plan could be made: {new['error']}")
+        ss.whatif = None
+        return
+    lines = [f"**What if:** {'; '.join(done)}."]
+    if new["status"] == "fallback":
+        lines.append("With that, no plan passes every guardrail, so the usual schedule would be kept and nothing is saved.")
+    else:
+        lines.append(f"Saving: {rs(old['saving'] or 0)} now → **{rs(new['saving'] or 0)}** with this change.")
+    moves = [f"{new['names'][k]} {_ampm(new['usual'][k])} → {_ampm(h)}" for k, h in new["schedule"].items()
+             if new["usual"].get(k) is not None and h != new["usual"][k]]
+    if new["status"] != "fallback":
+        lines.append("Moves: " + ("; ".join(moves) if moves else "none, every machine keeps its usual time") + ".")
+        if new.get("peak"):
+            lines.append(f"Peak {new['peak']:.0f} kVA.")
+    if bad:
+        lines.append(f"I could not: {'; '.join(bad)}.")
+    lines.append("Press **Set as plan** to use it, or **Discard**.")
+    say("agent", "\n".join(lines))
+
+
+def whatif_decide(keep: bool) -> None:
+    w, ss.whatif = ss.get("whatif"), None
+    if not w:
+        return
+    if not keep:
+        ss.audit.log(_rid(), "Plant manager", "what_if_discarded", tier="human", mode="human", reason=w["text"])
+        say("agent", "Discarded. The plan stays as it was.")
+        return
+    done = _apply(w["acts"], w["text"])
+    ss.audit.log(_rid(), "Plant manager", "setup_saved", tier="human", mode="human", reason=w["text"], detail={"applied": done, "via": "what-if, set as plan"})
+    ss.trigger_plan = True
+    say("agent", "Set as the plan: " + "; ".join(done) + ". Planning again, then approve it as usual.")
+    if ss.confirm_rule:
+        names = {m["id"]: m["name"] for m in ss.cfg["machines"]["shiftable"]}
+        say("agent", f"Is “{A.learned_rule_text(ss.confirm_rule, names)}” a one-time thing, or should I expect it in future? "
+                     "Answer “just today” or “from now on”.")
+
+
 def act_on(text: str) -> None:
     """The agentic loop for one message: propose actions (AI or plain code), check each in code, apply, re-plan, report."""
+    if ss.get("whatif"):                                          # the agent showed a what-if: yes sets it, no discards it
+        t0 = text.strip().lower()
+        if re.match(r"^(yes|ok|okay|set|do it|apply|go ahead|use it|sure|fine)\b", t0):
+            whatif_decide(True)
+            return
+        if re.match(r"^(no|discard|cancel|don'?t|leave it|forget it)\b", t0):
+            whatif_decide(False)
+            return
+        ss.whatif = None                                          # a new instruction replaces the old what-if
     if ss.confirm_rule:                                           # the agent asked "one-time or in future?"
         sc = _rule_scope(text)
         if sc != "ask" or re.match(r"^(just|only|once|no)\b", text.strip().lower()):
@@ -2183,64 +2324,9 @@ def act_on(text: str) -> None:
             acts = None
     acts = ACT.merge(acts, ACT.propose_offline(text, ms, waiting))
     ok, bad = ACT.check(acts, ms, spec, waiting, options)
-    done, replan = [], False
-    for a in [x for x in ok if x["type"] not in ("approve", "reject", "relax", "why", "answer")]:
-        t = a["type"]
-        if t == "set":
-            k, v = a["key"], a["value"]
-            if spec[k][0] == "pct":
-                v = v / 100
-            if k in PRICE_RULES:
-                ss.price_rules = {**ss.get("price_rules", PRICE_RULES), k: v}
-            else:
-                ss.proc = {**ss.proc, k: v}
-            done.append(f"{spec[k][3].lower()}: {'no limit' if v is None else v if not isinstance(v, float) or spec[k][0] != 'pct' else f'{v * 100:g}%'}")
-        elif t == "pin":
-            ss.pins = {**ss.pins, a["machine"]: a["hour"]}
-            done.append(f"{names[a['machine']]} at {_ampm(a['hour'])}")
-        elif t == "unpin":
-            ss.pins = {k: v for k, v in ss.pins.items() if k != a["machine"]}
-            done.append(f"{names[a['machine']]} is free to move again")
-        elif t == "rule":
-            lr = {"machine": a["machine"], "kind": a["kind"], "hour": a["hour"], "reason": text, "ts": f"{dt.datetime.now():%Y-%m-%d %H:%M}"}
-            scope = _rule_scope(text)
-            if scope == "always":
-                _save_rule_quiet(lr)
-                done.append("new rule, from now on: " + A.learned_rule_text(lr, names))
-            else:
-                ss.today_rules = ss.today_rules + [lr]
-                ss.audit.log(_rid(), "Plant manager", "one_time_rule", tier="human", mode="human", reason=text, detail=lr)
-                done.append("for this day only: " + A.learned_rule_text(lr, names))
-                if scope == "ask":
-                    ss.confirm_rule = lr
-        elif t == "window":
-            cfg = ss.cfg
-            sh = [{**m, "earliest_h": a["earliest"], "latest_finish_h": a["latest"]} if m["id"] == a["machine"] else m for m in cfg["machines"]["shiftable"]]
-            cfg["machines"] = {**cfg["machines"], "shiftable": sh}
-            save_plant_file(cfg)
-            ss.cfg_version += 1
-            done.append(f"{names[a['machine']]} may run {a['earliest']:02d}:00 to {a['latest']:02d}:00")
-        elif t == "weather":
-            ss.w_weather = a["value"]
-            done.append(f"weather: {a['value'].lower()}")
-        elif t == "order":
-            ss.notes_rows = ss.notes_rows + [{"Name": "Order from chat", "Kind": "New order", "Note, in plain words": a["text"],
-                                              "Could start as early as": None, "Could finish as late as": None, "Side cost if relaxed": ""}]
-            ss.notes_ver += 1
-            done.append("new order added")
-        elif t == "goal":
-            ss.w_goal = a["text"]
-            done.append(f"goal: “{a['text']}”")
-        replan = True
-    if replan:
-        ss.audit.log(_rid(), "Plant manager", "setup_saved", tier="human", mode="human", reason=text, detail={"applied": done, "by": how})
-        ss.trigger_plan = True
-        say("agent", "Done: " + "; ".join(done) + ". Planning again." + (f" I could not: {'; '.join(bad)}." if bad else ""))
-        if ss.confirm_rule:
-            say("agent", f"Is “{A.learned_rule_text(ss.confirm_rule, names)}” a one-time thing, or should I expect it in future? "
-                         "Answer “just today” or “from now on”.")
-        if any(x["type"] == "approve" for x in ok):
-            say("agent", "The plan changed, so approve the new one when you are happy with it.")
+    changes = [x for x in ok if x["type"] not in ("approve", "reject", "relax", "why", "answer")]
+    if changes:                                   # never change the plan straight away: try it first, then the manager decides
+        simulate_and_offer(changes, text, how, bad)
         return
     for a in ok:                                                  # actions on the plan that is waiting
         if a["type"] == "approve":
@@ -2281,6 +2367,8 @@ GOAL_WORDS = {"max_moves": lambda v: "no limit on machines moved" if v is None e
 
 
 def chat_chips() -> list[str]:
+    if ss.get("whatif"):
+        return ["Why?", "What if we keep the usual times?"]
     if ss.get("confirm_rule"):
         return ["Just today", "From now on"]
     if pending and pending.get("type") == "choose_relaxation":
@@ -2305,6 +2393,15 @@ def conversation() -> None:
                              type="primary" if o["id"] == pending.get("recommended") else "secondary"):
                     do_resume(o["id"])
                     st.rerun()
+        # WHAT-IF: the change was tried; the manager decides
+        if ss.get("whatif"):
+            c1, c2 = st.columns(2)
+            if c1.button("Set as plan", key="wi_set", type="primary", width="stretch", icon=":material/check:"):
+                whatif_decide(True)
+                st.rerun()
+            if c2.button("Discard", key="wi_drop", width="stretch", icon=":material/close:"):
+                whatif_decide(False)
+                st.rerun()
         # LEARNS: one-time, or a rule for the future?
         if ss.confirm_rule:
             html(f"<div class='rh-note'><b>One-time, or in future?</b> {escape(A.learned_rule_text(ss.confirm_rule, {m['id']: m['name'] for m in MACH['shiftable']}))}</div>")
