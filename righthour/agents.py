@@ -596,17 +596,17 @@ def step_action(ctx: Context, st: dict) -> dict:
     sav0 = base0["total_rs"] - st["plan"]["total_rs"] if base0["feasible"] else None
     pol = policy_check(st["problem"], st["plan"]["schedule"], saving_rs=sav0)
     ctx.log(st["steps"], "Guardrails (code)", "policy_check", detail={"passed": pol["passed"], "checks": pol["checks"]})
-    # the governance agent reads what code cannot: the manager's own words, against the schedule
+    # the AI policy reviewer reads what code cannot: the manager's own words, against the schedule
     words_ = [n.get("text", "") for n in (ctx.notes or [])] + [lr.get("reason", "") for lr in ctx.machines_cfg.get("learned_rules", [])]
     words_ = [w for w in words_ if w][:8]
     if ctx.llm.live and words_:
         sched = {m["name"]: f"{st['plan']['schedule'][m['id']]:02d}:00" for m in st["problem"]["shiftable"]}
-        js, model, toks = _json_call(ctx, "governance_review", "You are the governance agent of a factory power planner. You look for conflicts a rule engine cannot see.",
+        js, model, toks = _json_call(ctx, "governance_review", "You are the AI policy reviewer of a factory power planner. You look for conflicts a rule engine cannot see.",
                                      f"The manager's notes and reasons: {words_}\nPlanned start times: {sched}\n"
                                      'Return {"concerns": [up to 3 plain sentences of at most 30 words, each about a real conflict between the notes and the plan; empty if none]}.', 500)
         concerns = [str(c).strip() for c in (js or {}).get("concerns", []) if str(c).strip()][:3] if js else []
         pol = {**pol, "review": concerns}
-        ctx.log(st["steps"], "Governance agent", "governance_review", tier=("T2" if model == tier_model("T2") else "T1") if js else "T0", model=model if js else "",
+        ctx.log(st["steps"], "AI policy reviewer", "governance_review", tier=("T2" if model == tier_model("T2") else "T1") if js else "T0", model=model if js else "",
                 mode="live API" if js else "code", tokens=toks,
                 reason="the AI model read the manager's notes against the plan (advice only; the rule check above decides)" if js else f"model call failed ({getattr(ctx, 'last_ai_error', '?')}): no review",
                 detail={"concerns": concerns})

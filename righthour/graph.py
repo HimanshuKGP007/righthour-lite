@@ -74,10 +74,10 @@ def build_graph(ctx: Context):
             ctx.audit.log(ctx.run_id, "Plant manager", "reject", tier="human", mode="human",
                           reason=decision.get("reason", ""), detail={})
             return {"approval": decision, "status": "rejected"}
-        # edit: the governance layer checks the edited plan before it can be approved
+        # edit: the guardrails check the edited plan before it can be approved
         pol = policy_check(state["problem"], decision["schedule"])
         failed = [c["rule"] for c in pol["checks"] if c["hard"] and not c["ok"]]
-        ctx.audit.log(ctx.run_id, "Governance", "policy_check", reason="manager edited the plan",
+        ctx.audit.log(ctx.run_id, "Guardrails (code)", "policy_check", reason="manager edited the plan",
                       detail={"edited": decision["schedule"], "passed": pol["passed"], "failed": failed})
         if not pol["passed"]:
             return {"status": "edit_blocked", "edit_result": {"schedule": decision["schedule"], "failed": failed}}
@@ -91,7 +91,7 @@ def build_graph(ctx: Context):
         return {"status": "work_order_issued"}
 
     def fallback(state: RunState) -> dict:
-        ctx.audit.log(ctx.run_id, "Governance", "safe_fallback", tier="T0", mode="code",
+        ctx.audit.log(ctx.run_id, "Guardrails (code)", "safe_fallback", tier="T0", mode="code",
                       reason=state.get("note", "keep current schedule"), detail={})
         return {"status": "fallback"}
 

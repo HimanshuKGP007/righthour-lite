@@ -304,3 +304,28 @@ def test_power_factor_never_moves_a_machine_inside_one_price_band():
     assert optimise_schedule(p)["schedule"]["pumps"] == 2                 # stays at its usual time
     # its own power factor does count: 60 kW for 3 h at 0.85 bills 211.8 kVAh, not 180
     assert evaluate(p, {"pumps": 2})["total_rs"] - evaluate({**p, "shiftable": []} | {"shiftable": [{**m, "kw": 0.0001}]}, {"pumps": 2})["total_rs"] == pytest.approx(60 / 0.85 * 3 * 8.79, rel=1e-3)
+
+
+def test_limits_text_handles_every_kind():
+    """The settings list the AI reads must never crash (a decimal minimum once broke it, silently, for every chat message)."""
+    from righthour.act import limits_text
+    spec = {"a": ("toggle", None, None, "A"), "b": ("radio", ["x", "y"], None, "B"), "c": ("optint", 0, 5, "C"),
+            "d": ("slider", 0.6, 1.0, "D"), "e": ("money", 0, 100000, "E")}
+    t = limits_text(spec)
+    assert "x or y" in t and "0.6 to 1.0" in t and "null (no limit) or 0-5" in t
+
+
+def test_model_backup_chain_on_quota():
+    """When a model is out of its daily quota, the next model in the chain answers; last_model names it."""
+    from righthour.llm import LLMClient
+    c = LLMClient("Offline")
+    tried = []
+
+    def fake(model, system, prompt, max_tokens=800):
+        tried.append(model)
+        if model != "qwen/qwen3.8-27b":
+            raise RuntimeError("Groq error 429: rate limit reached on tokens per day")
+        return "ok", 1, 1
+    c._complete = fake
+    assert c.complete("openai/gpt-oss-120b", "s", "p")[0] == "ok"
+    assert tried == ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"] and c.last_model == "qwen/qwen3.8-27b"

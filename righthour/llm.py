@@ -66,7 +66,7 @@ class LLMClient:
                     body_txt = e.read().decode(errors="replace")
                     m = re.search(r"try again in ([\d.]+)(ms|s)", body_txt)
                     wait = float(m.group(1)) / (1000 if m and m.group(2) == "ms" else 1) if m else float(e.headers.get("retry-after") or 3)
-                    if wait > 8:                       # a long wait (a quota): fail now, so the agent can hand over to the other model
+                    if wait > float(os.environ.get("RH_MAX_WAIT_S", 8)):   # a long wait (a quota): fail now, so the agent can hand over to the other model
                         self._fail_text(body_txt, e.code)
                     time.sleep(max(wait, 0.5) + 0.5)
                     continue
@@ -108,12 +108,17 @@ class LLMClient:
             self.last_model = model
             return out
         except RuntimeError as e:
-            backup = BACKUP.get(model)
-            if not backup or not re.search(r"\b(429|503|rate limit|quota)\b", str(e), re.I):
-                raise
-            out = self._complete(backup, system, prompt, max_tokens)
-            self.last_model = backup
-            return out
+            err = e
+            for backup in BACKUP.get(model, []):
+                if not re.search(r"\b(429|503|rate limit|quota)\b", str(err), re.I):
+                    break
+                try:
+                    out = self._complete(backup, system, prompt, max_tokens)
+                    self.last_model = backup
+                    return out
+                except RuntimeError as e2:
+                    err = e2
+            raise err
 
     def _complete(self, model: str, system: str, prompt: str, max_tokens: int = 800) -> tuple[str, int, int]:
         if not self.live:
@@ -138,7 +143,9 @@ class LLMClient:
 
 # A model's backup in the same size class, used when the first is out of quota (Groq free tier: 200K tokens a day each).
 # Not Llama Prompt Guard: that is an 86M-parameter classifier for hidden instructions, not a model that can write or plan.
-BACKUP = {"qwen/qwen3.8-27b": "openai/gpt-oss-20b"}
+BACKUP = {"openai/gpt-oss-120b": ["openai/gpt-oss-20b", "qwen/qwen3.8-27b"],   # each Groq model has its own daily quota:
+          "qwen/qwen3.8-27b": ["openai/gpt-oss-20b", "openai/gpt-oss-120b"],   # when one runs out, the next answers,
+          "openai/gpt-oss-20b": ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]}   # then plain code
 
 _NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
 

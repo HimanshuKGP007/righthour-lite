@@ -31,6 +31,8 @@ from righthour.agents import PROCESS_DEFAULTS, Context, lakh, parse_tariff, rs, 
 from righthour.audit import AuditLog
 from righthour.graph import resume, start
 from righthour import memory as MEM
+from righthour import agent_loop as AGENT
+from righthour.optimiser import allowed_starts as _allowed_starts, evaluate as _evaluate
 from righthour.llm import KEY_ENV, LABEL, PROVIDERS, LLMClient, default_provider, number_guard, numbers_in, suggest_models
 from righthour.router import MODELS, PRICES, cost_usd, set_models, set_provider
 from righthour.tariff import N_SLOTS, PRICE_RULES, SLOTS_PER_HOUR, price_gauges, validate_tariff
@@ -542,8 +544,8 @@ def on_new_plan(st_: dict, pend: dict | None) -> None:
                                                            "New plant settings." if prev["cfg"] != cur["cfg"] else "Re-planned.")
             say("agent", f"{cause} I moved {moved}. Still {save}." if mv else f"{cause} Everything stays at its usual time.")
     concerns = (st_.get("policy") or {}).get("review") or []
-    if concerns:                                  # the governance agent read your notes against the plan
-        say("agent", "**Governance agent, worth a look:** " + " ".join(concerns))
+    if concerns:                                  # the AI policy reviewer read your notes against the plan
+        say("agent", "**AI policy reviewer, worth a look:** " + " ".join(concerns))
     ss.prev_plan = cur
 
 
@@ -556,9 +558,11 @@ if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and pla
     with st.spinner("Agents working: forecasting, reading the tariff, solving..."):
         try:
             dr = ss.get("day_relax") or {}
+            # RH_PLAN_OFFLINE=1 (tests only): plans use plain code, so a chat test spends AI tokens on the chat alone
             ctx = Context(SITE, ss.tariff, MACH, ss.hist, goal=goal or "Cut tomorrow's bill.", cloudy=WEATHER[weather], plan_date=plan_date,
+                          llm=LLMClient("Offline") if os.environ.get("RH_PLAN_OFFLINE") == "1" else LLM,
                           relaxation=dr.get("id") if dr.get("date") == str(plan_date) else None,
-                          notes=notes_for_run(), bias=ss.bias, llm=LLM, audit=ss.audit, process={**ss.proc, **ASK.parse_goal(goal), "pins": dict(ss.pins), "today_rules": list(ss.today_rules), "skip_rules": list(ss.get("today_skip", []))})
+                          notes=notes_for_run(), bias=ss.bias, audit=ss.audit, process={**ss.proc, **ASK.parse_goal(goal), "pins": dict(ss.pins), "today_rules": list(ss.today_rules), "skip_rules": list(ss.get("today_skip", []))})
             graph, cfg, state, pending = start(ctx)
             ss.whatif, ss.show_why, ss.open_change = None, False, False
             ss.run = {"ctx": ctx, "graph": graph, "cfg": cfg, "state": state, "pending": pending, "cfg_version": ss.cfg_version,
@@ -1469,7 +1473,8 @@ ACTION_WORDS = {"validate_data": "Checked the meter readings", "forecast_load": 
                 "offer_declined": "Kept the main plan", "one_time_rule": "Rule for this day only", "forget": "Forgot from memory",
                 "memory_saved": "Saved to factory memory", "ask_question": "Question to Ask RightHour",
                 "answered": "Answered your question", "explain_move": "Explained why machines moved", "explain_stay": "Explained why machines stayed",
-                "week_plan": "Planned the week ahead", "pilot_sample": "Built a sample savings total"}
+                "week_plan": "Planned the week ahead", "agent_think": "Thought about your message", "agent_tool": "Looked something up",
+                "agent_reply": "Answered you", "agent_fallback": "Fell back to plain code", "pilot_sample": "Built a sample savings total"}
 TIER_WORDS = {"T0": "Plain code", "T1": "Small AI model", "T2": "Large AI model", "human": "A person"}
 
 
@@ -2609,6 +2614,179 @@ def why_not_moved(mid: str, st_: dict, names: dict) -> str:
     return f"**{m['name']}** stays at {A.hhmm(h)}. " + A.why_moved(prob, m, h, st_["plan"]["schedule"]).replace(f"{m['name']} stays", "It stays")
 
 
+# ------------------------------------------------------------------ the chat agent: a tool-using loop on the large model
+def plan_snapshot(st_: dict, pend: dict | None) -> str:
+    """What the chat agent always knows: a short, factual picture of the day being planned."""
+    site, t = ss.cfg["site"], ss.tariff
+    prob, plan, base = st_.get("problem") or {}, st_.get("plan") or {}, st_.get("baseline") or {}
+    sched = plan.get("schedule") or {}
+    L = [f"Day planned: {st_['forecast']['weekday']} {st_['forecast']['date']}" if st_.get("forecast") else "No plan yet.",
+         f"Weather setting: {ss.w_weather}. Goal: {goal or 'cut the bill'}.",
+         f"Status: {str(st_.get('status') or 'no plan').replace('_', ' ')}. Waiting for the manager: "
+         + ("approve or reject the plan" if pend and pend.get("type") == "approval" else "choose a rule to relax" if pend else "nothing") + "."]
+    if st_.get("saving_rs") is not None:
+        L.append(f"Saving vs the usual schedule: ₹{st_['saving_rs']:,.0f} a day. Plan cost ₹{plan.get('total_rs', 0):,.0f}; usual ₹{base.get('total_rs', 0):,.0f}.")
+    elif plan.get("total_rs") is not None:
+        L.append(f"No saving claimed (no like-for-like usual schedule). Plan cost ₹{plan['total_rs']:,.0f}.")
+    if plan.get("peak_kva") is not None:
+        L.append(f"Highest demand in the plan: {plan['peak_kva']:.0f} kVA. This month's high so far: {site['month_to_date_max_kva']} kVA. Contract: {site['contract_demand_kva']} kVA.")
+    moved = {m["id"] for m, _ in _moves(st_)}
+    for m in prob.get("shiftable", []):
+        if m["id"] not in sched:
+            continue
+        b, h = m.get("baseline_start_h"), sched[m["id"]]
+        if m["id"] in moved:
+            f = A.move_facts(prob, sched, m)
+            L.append(f"MOVED {m['id']} = {m['name']} ({m['kw']:g} kW, {m['duration_h']:g} h): usual {b:02d}:00 -> planned {h:02d}:00. "
+                     f"Why: {_why_body(A.why_moved(prob, m, h, sched), m)}")
+        else:
+            L.append(f"STAYS {m['id']} = {m['name']} ({m['kw']:g} kW, {m['duration_h']:g} h) at {h:02d}:00"
+                     + (" (new order)" if b is None else " (its usual time)") + f". Why: {stay_reason(m, st_)[0]}")
+    if prob.get("idle"):
+        L.append(f"Off today: {', '.join(prob['idle'])}.")
+    lim = [GOAL_WORDS[k](ss.proc[k]) for k in GOAL_WORDS if ss.proc.get(k) not in (None, 0, False)]
+    if lim:
+        L.append("Limits on: " + "; ".join(lim) + ".")
+    if ss.pins:
+        L.append("Kept by the manager today: " + ", ".join(f"{k} at {v:02d}:00" for k, v in ss.pins.items()) + ".")
+    if ss.today_rules:
+        L.append("Rules for today: " + "; ".join(A.learned_rule_text(r, {m['id']: m['name'] for m in MACH['shiftable']}) for r in ss.today_rules) + ".")
+    L.append("Price bands: " + "; ".join(f"{b_['type']} {b_['start_h']:02d}:00-{b_['end_h']:02d}:00 ₹{b_['rate']:.2f}/kVAh" for b_ in t["slots"]) + ".")
+    if ss.get("whatif"):
+        w = ss.whatif
+        L.append(f"A TRIED CHANGE waits for the manager (Set as plan or Discard): {'; '.join(w.get('done') or [])}. "
+                 f"With it: status {w['new'].get('status')}, saving ₹{(w['new'].get('saving') or 0):,.0f}.")
+    if ss.get("offers"):
+        L.append("OFFERS wait for the manager: " + "; ".join(f"option {i + 1}: {o['label']} (+₹{o['gain']:,.0f})" for i, o in enumerate(ss.offers)) + ".")
+    if ss.get("confirm_rule"):
+        L.append("You asked the manager: is the new rule one-time or for the future?")
+    if pend and pend.get("type") == "choose_relaxation":
+        L.append("You asked which rule may flex. Options: " + "; ".join(f"{o['id']} = {o['text']} ({'works' if o['feasible'] else 'does not fit'})" for o in pend["options"]) + ".")
+    return "\n".join(L)
+
+
+def chat_history_text(n: int = 8) -> str:
+    return "\n".join(f"{'Agent' if m['who'] == 'agent' else 'Manager'}: {m['text'][:500]}" for m in ss.feed[-n:])
+
+
+def agent_tools(st_: dict, ms: list[dict], spec: dict, waiting: str | None, options: list[dict]) -> dict:
+    """Read-only tools for the chat agent. Every number they return is worked out in code."""
+    prob, sched = st_.get("problem") or {}, (st_.get("plan") or {}).get("schedule") or {}
+    by = {m["id"]: m for m in prob.get("shiftable", [])}
+
+    def _m(args: dict) -> dict:
+        mid = str(args.get("machine") or "")
+        if mid not in by:
+            raise ValueError(f"unknown machine {mid!r}; machine IDs: {', '.join(by)}")
+        return by[mid]
+
+    def why_moved(a):
+        m = _m(a)
+        return A.why_moved(prob, m, sched[m["id"]], sched)
+
+    def why_stayed(a):
+        if a.get("machine"):
+            return f"{_m(a)['name']}: " + stay_reason(_m(a), st_)[0]
+        return explain_stays_code(st_)
+
+    def price_move(a):
+        m, h = _m(a), int(a.get("hour"))
+        if h not in _allowed_starts(m):
+            return (f"{m['name']} cannot start at {h:02d}:00: its {m['duration_h']:g} h run must fit {m['earliest_h']:02d}:00-{m['latest_finish_h']:02d}:00.")
+        now, alt = _evaluate(prob, sched), _evaluate(prob, {**sched, m["id"]: h})
+        diff = alt["total_rs"] - now["total_rs"]
+        clash = [o["name"] for o in prob["shiftable"] for x, y in prob.get("no_overlap", []) if o["id"] != m["id"] and {x, y} == {m["id"], o["id"]}
+                 and set(range(h * 4, (h + int(m["duration_h"])) * 4)) & set(range(sched[o["id"]] * 4, (sched[o["id"]] + int(o["duration_h"])) * 4))]
+        return (f"{m['name']} at {h:02d}:00 instead of {sched[m['id']]:02d}:00: the day costs ₹{alt['total_rs']:,.0f} against ₹{now['total_rs']:,.0f} in the plan "
+                f"({'₹%s more' % f'{diff:,.0f}' if diff > 0.5 else '₹%s less' % f'{-diff:,.0f}' if diff < -0.5 else 'the same'}). "
+                f"Highest demand {alt['peak_kva']:.0f} kVA (contract {prob['contract_demand_kva']:.0f})."
+                + (f" It would run together with the {', '.join(clash)}, which a crew rule does not allow." if clash else ""))
+
+    def try_change(a):
+        acts = [x for x in (a.get("actions") or []) if isinstance(x, dict)]
+        ok_, bad_ = ACT.check(acts, ms, spec, waiting, options)
+        ch = [x for x in ok_ if x["type"] not in ("approve", "reject", "relax", "why", "answer")]
+        if not ch:
+            return "Nothing to try" + (f": {'; '.join(bad_)}" if bad_ else ".")
+        done_, new = _try(ch, "(the agent's own try)")
+        if new.get("error"):
+            return f"The try failed: {new['error']}"
+        mv = [f"{new['names'].get(k, k)} {new['usual'].get(k)}:00 -> {v}:00" for k, v in new["schedule"].items() if new["usual"].get(k) is not None and new["usual"][k] != v]
+        return (f"Tried: {'; '.join(done_)}. Result: status {new['status']}, saving ₹{(new.get('saving') or 0):,.0f} "
+                f"(the current plan: ₹{(st_.get('saving_rs') or 0):,.0f}). Moves: {'; '.join(mv) or 'none'}."
+                + (f" Refused: {'; '.join(bad_)}." if bad_ else ""))
+
+    def rules(_a):
+        names = {m["id"]: m["name"] for m in MACH["shiftable"]}
+        crew = [f"{r['text']} ({'hard' if r['hard'] else 'may flex: ' + (r.get('relax_text') or '')})" for r in ss.cfg["machines"]["rules"]]
+        learned = [A.learned_rule_text(r, names) for r in ss.cfg["machines"].get("learned_rules", [])]
+        lim = {k: ss.proc.get(k) for k in ("margin_pct", "block_new_peak", "max_moves", "min_saving_rs", "min_move_rs", "machine_pf")}
+        return f"Crew rules: {'; '.join(crew) or 'none'}. Learned rules: {'; '.join(learned) or 'none'}. Guardrail settings: {json.dumps(lim)}."
+
+    def tariff(_a):
+        f = ask_facts()
+        return f"Bands: {f['bands']}. Demand charge {f['demand_charge']}. Contract {f['contract_kva']} kVA; this month's high {f['month_max_kva']} kVA. Rooftop solar {f['pv_kwp']} kWp."
+
+    def data(_a):
+        issues = st_.get("data_issues") or []
+        f = ask_facts()
+        return f"Data: {f['data']} Forecast: {f['process']}. Checks: " + "; ".join(f"{i['level']}: {re.sub('<[^>]+>', '', i['text'])}" for i in issues)[:1500]
+
+    def history(_a):
+        f = ask_facts()
+        return (f"Verified savings: {f['verified'] or 'no day checked yet'}. Total verified: {f['verified_total'] or 'none'}. "
+                f"Recent decisions: {f['decisions'] or 'none'}.")
+
+    def run_steps(_a):
+        return ask_facts()["steps"] or "No steps logged for this run."
+
+    def explanation(_a):
+        return st_.get("explanation") or "No explanation yet."
+
+    return {"why_moved": ('{"machine": ID} why a moved machine moved: price, solar, demand high, rules, and the rupees', why_moved),
+            "why_stayed": ('{"machine": ID or null} why a machine (or every machine that stayed) kept its time', why_stayed),
+            "price_move": ('{"machine": ID, "hour": H} what the day costs if that machine starts at hour H instead (rules checked)', price_move),
+            "try_change": ('{"actions": [actions]} try changes on a copy of the plan and get the new saving and moves (nothing changes)', try_change),
+            "rules": ("{} crew rules, learned rules and guardrail settings", rules),
+            "tariff": ("{} price bands, demand charge, contract demand, solar size", tariff),
+            "data": ("{} meter data, forecast method and the data checks", data),
+            "history": ("{} savings checked on later days and recent decisions", history),
+            "run_steps": ("{} which agents, models and tools worked on this plan", run_steps),
+            "explanation": ("{} the plan's written explanation", explanation)}
+
+
+def chat_agent(text: str, st_: dict, pend: dict | None, ms: list[dict], spec: dict, waiting: str | None, options: list[dict]) -> dict | None:
+    """Runs the agent loop. Returns its result, or None (the caller then uses the plain-code path)."""
+    model = MODELS[ss.provider]["T2"]
+    help_ = AGENT.ACTIONS_HELP.format(limits=ACT.limits_text(spec), machines="; ".join(f"{m['id']} = {m['name']}" for m in ms))
+
+    def on_call(c: dict) -> None:
+        ss.audit.log(_rid(), "Chat agent", "agent_think", tier="T2", model=c["model"], mode="live API", reason=f"thinking about “{text[:80]}”",
+                     tokens_in=c["tokens_in"], tokens_out=c["tokens_out"], cost_usd=cost_usd(c["model"], c["tokens_in"], c["tokens_out"]))
+    try:
+        res = AGENT.run(LLM, model, text, plan_snapshot(st_, pend), chat_history_text(), agent_tools(st_, ms, spec, waiting, options), help_, on_call=on_call)
+    except Exception as e:  # noqa: BLE001
+        ss.llm_err["text"] = str(e)
+        ss.audit.log(_rid(), "Chat agent", "agent_fallback", tier="T0", mode="code", reason=f"the agent could not answer ({type(e).__name__}: {str(e)[:120]}); plain code answers")
+        return None
+    for stp in res["steps"]:
+        ss.audit.log(_rid(), "Chat agent", "agent_tool", tier="T0", mode="code", reason=f"{stp['tool']}({json.dumps(stp['args'], ensure_ascii=False)[:120]}) → {stp['result'][:300]}")
+    ss.audit.log(_rid(), "Chat agent", "agent_reply", tier="T2", model=res["model"], mode="live API",
+                 reason=f"{res['calls']} model call(s), {len(res['steps'])} tool call(s); actions: {json.dumps(res['actions'], ensure_ascii=False)[:200]}",
+                 detail={"message": text, "reply": res["reply"], "actions": res["actions"], "steps": [s_["tool"] for s_ in res["steps"]]})
+    return res
+
+
+def explain_stays_code(st_: dict) -> str:
+    prob = st_.get("problem") or {}
+    moved = {m["id"] for m, _ in _moves(st_)}
+    out = [f"{m['name']} stays at {A.hhmm(st_['plan']['schedule'][m['id']])}: {stay_reason(m, st_)[0]}"
+           for m in prob.get("shiftable", []) if m["id"] not in moved and m["id"] in (st_.get("plan") or {}).get("schedule", {})]
+    if prob.get("idle"):
+        out.append(f"Off today: {', '.join(prob['idle'])}.")
+    return "\n".join(out) or "Every machine that runs today was moved."
+
+
 def act_on(text: str) -> None:
     """The agentic loop for one message: propose actions (AI or plain code), check each in code, apply, re-plan, report."""
     if ss.get("offers"):                                          # the agent offered options: "keep the main plan" or "option 2"
@@ -2641,8 +2819,26 @@ def act_on(text: str) -> None:
     waiting = pend["type"] if pend else None
     options = [{**o, "recommended": o["id"] == pend.get("recommended")} for o in (pend or {}).get("options", [])] if waiting == "choose_relaxation" else []
     spec = action_spec()
-    acts, how = None, "plain code"
-    if LLM.live:
+    acts, how, agent_spoke = None, "plain code", False
+    if LLM.live and os.environ.get("RH_CHAT_AGENT", "1") != "0":
+        res = chat_agent(text, st_, pend, ms, spec, waiting, options)
+        if res is not None:
+            acts, how, agent_spoke = res["actions"], "chat agent", True
+            if res["reply"]:
+                say("agent", res["reply"])
+            for a in acts:                                        # answers to what the agent itself is waiting for
+                if a.get("type") == "whatif" and ss.get("whatif"):
+                    whatif_decide(a.get("decision") == "set")
+                    return
+                if a.get("type") == "offer" and ss.get("offers"):
+                    pk = a.get("pick")
+                    offer_decide(int(pk) - 1 if isinstance(pk, (int, float)) and 1 <= int(pk) <= len(ss.offers) else None)
+                    return
+                if a.get("type") == "rule_scope" and ss.confirm_rule:
+                    _confirm_rule_answer("always" if a.get("scope") == "always" else "once")
+                    return
+            acts = [a for a in acts if a.get("type") not in ("whatif", "offer", "rule_scope", "why", "answer")]
+    if LLM.live and not agent_spoke:
         try:
             model = MODELS[ss.provider]["T2"]
             acts, toks = ACT.propose_llm(LLM, model, text, ms, spec, waiting, options)
@@ -2652,8 +2848,9 @@ def act_on(text: str) -> None:
         except Exception as e:  # noqa: BLE001
             ss.llm_err["text"] = str(e)
             acts = None
-    acts = ACT.merge(acts, ACT.propose_offline(text, ms, waiting))
-    ok, bad = ACT.check(acts, ms, spec, waiting, options)
+    if not agent_spoke:
+        acts = ACT.merge(acts, ACT.propose_offline(text, ms, waiting))
+    ok, bad = ACT.check(acts or [], ms, spec, waiting, options)
     changes = [x for x in ok if x["type"] not in ("approve", "reject", "relax", "why", "answer")]
     if changes:
         rejecting = any(x["type"] == "reject" for x in ok)
@@ -2696,7 +2893,7 @@ def act_on(text: str) -> None:
                 say("agent", why_not_moved(a.get("machine"), st_, names) if a.get("machine") else (st_.get("explanation") or "Generate a plan first."))
         elif a["type"] == "answer":
             say("agent", ask_answer(text))
-    if not ok:
+    if not ok and not agent_spoke:
         say("agent", "That does not change the plan" + (f": {'; '.join(bad)}." if bad else ".") + " Try, for example, “keep the oven after 8 pm” or “use a 5% margin”.")
     elif bad:
         say("agent", f"I could not: {'; '.join(bad)}.")

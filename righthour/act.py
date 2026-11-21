@@ -45,7 +45,14 @@ Hours are 0-24 as the manager wrote them (6 pm = 18). Never invent a number the 
 def limits_text(spec: dict) -> str:
     out = []
     for k, (kind, lo, hi, label) in spec.items():
-        rng = {"toggle": "true/false", "radio": " or ".join(map(str, lo or [])), "optint": f"null (no limit) or {lo}-{hi}"}.get(kind, f"{lo} to {hi}")
+        if kind == "toggle":
+            rng = "true/false"
+        elif kind == "radio":
+            rng = " or ".join(map(str, lo or []))
+        elif kind == "optint":
+            rng = f"null (no limit) or {lo}-{hi}"
+        else:
+            rng = f"{lo} to {hi}"
         out.append(f"    {k}: {label} ({rng})")
     return "\n".join(out)
 
