@@ -51,14 +51,16 @@ def load() -> dict:
             for k in ("site", "tariff"):
                 cfg[k] = saved.get(k, cfg[k])
             cfg["machines"] = {**cfg["machines"], "shiftable": saved.get("shiftable", cfg["machines"]["shiftable"]),
-                               "rules": saved.get("rules", cfg["machines"]["rules"])}
+                               "rules": saved.get("rules", cfg["machines"]["rules"]),
+                               "learned_rules": saved.get("learned_rules", [])}
         except (OSError, ValueError):
             pass
     return _normalise(cfg)
 
 
 def save(cfg: dict) -> None:
-    out = {"site": cfg["site"], "tariff": cfg["tariff"], "shiftable": cfg["machines"]["shiftable"], "rules": cfg["machines"]["rules"]}
+    out = {"site": cfg["site"], "tariff": cfg["tariff"], "shiftable": cfg["machines"]["shiftable"], "rules": cfg["machines"]["rules"],
+           "learned_rules": cfg["machines"].get("learned_rules", [])}
     CONFIG_PATH.write_text(json.dumps(out, indent=1, ensure_ascii=False))
 
 

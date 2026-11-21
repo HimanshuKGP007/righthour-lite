@@ -29,6 +29,7 @@ from righthour import agents as A
 from righthour.agents import PROCESS_DEFAULTS, Context, lakh, parse_tariff, rs, verify_and_learn
 from righthour.audit import AuditLog
 from righthour.graph import resume, start
+from righthour import memory as MEM
 from righthour.llm import KEY_ENV, LABEL, PROVIDERS, LLMClient, default_provider, number_guard, numbers_in, suggest_models
 from righthour.router import MODELS, PRICES, cost_usd, set_models, set_provider
 from righthour.tariff import N_SLOTS, PRICE_RULES, SLOTS_PER_HOUR, price_gauges, validate_tariff
@@ -57,12 +58,72 @@ except Exception:  # noqa: BLE001  no secrets file is fine: the app runs offline
 
 # ------------------------------------------------------------------ state
 ss = st.session_state
+
+
+@st.cache_resource
+def memory_store() -> MEM.MemoryStore:
+    return MEM.MemoryStore()
+
+
+STORE = memory_store()
+if not ss.get("plant"):                        # a page refresh or a new tab: the session token in the link signs the plant back in
+    tok = st.query_params.get("s")
+    code = STORE.resume(tok)
+    ss.plant, ss.token = (code, tok) if code else (MEM.DEMO, None)
+if ss.get("loaded_for") != ss.plant:           # load everything this plant's agent has learned
+    mem = STORE.load(ss.plant)
+    base = CFG.load() if ss.plant == MEM.DEMO else CFG.defaults()
+    if ss.plant != MEM.DEMO:
+        base = CFG._normalise(base)
+    ss.cfg = mem.get("cfg") or base
+    ss.cfg["machines"].setdefault("learned_rules", [])
+    ss.tariff = ss.cfg["tariff"]
+    ss.bias = float(mem.get("bias", 1.0))
+    ss.bias_history = mem.get("bias_history", [])
+    ss.library = mem.get("library", {})
+    ss.proc = {**PROCESS_DEFAULTS, **mem.get("proc", {})}
+    ss.price_rules = {**PRICE_RULES, **mem.get("price_rules", {})}
+    ss.plant_name = "Demo plant" if ss.plant == MEM.DEMO else STORE.plant_name(ss.plant)
+    ss.loaded_for = ss.plant
+
+
+def persist() -> None:
+    """Saves what this plant's agent knows. Runs at the start and the end of every screen draw."""
+    if ss.get("loaded_for") != ss.plant:
+        return
+    hist = ss.get("bias_history", [])
+    if not hist or abs(hist[-1]["bias"] - ss.bias) > 1e-9:
+        if hist or ss.bias != 1.0:
+            ss.bias_history = hist + [{"ts": f"{dt.datetime.now():%Y-%m-%d %H:%M}", "bias": round(ss.bias, 4)}]
+    try:
+        STORE.save(ss.plant, {"cfg": ss.cfg, "bias": ss.bias, "bias_history": ss.get("bias_history", []), "library": ss.library,
+                              "proc": ss.proc, "price_rules": ss.get("price_rules", PRICE_RULES)})
+    except Exception as e:  # noqa: BLE001  memory must never stop the planner
+        ss.mem_err = str(e)
+
+
+def switch_plant(code: str, token: str | None) -> None:
+    """A new plant signs in, or the manager signs out: start clean, keep only typed AI keys."""
+    for k in list(ss.keys()):
+        if not (str(k).startswith(("key_", "m_T")) or k in ("setup_done", "w_provider", "models", "model_ok")):
+            del ss[k]
+    ss.plant, ss.token = code, token
+    if token:
+        st.query_params["s"] = token
+    else:
+        st.query_params.clear()
+
+
 ss.setdefault("cfg", CFG.load())            # the plant's own settings: site, tariff, machines, crew rules
 ss.setdefault("cfg_version", 0)
 SITE, MACH = ss.cfg["site"], ss.cfg["machines"]
 ss.setdefault("hist", None)
 ss.setdefault("bias", 1.0)
-ss.setdefault("audit", AuditLog(Path("righthour_audit.sqlite")))
+if ss.plant == MEM.DEMO:
+    ss.setdefault("audit", AuditLog(Path("righthour_audit.sqlite")))
+else:                                          # each plant has its own audit trail
+    Path("plant_audit").mkdir(exist_ok=True)
+    ss.setdefault("audit", AuditLog(Path("plant_audit") / f"{ss.plant}.sqlite"))
 ss.setdefault("tariff", ss.cfg["tariff"])
 ss.setdefault("library", {})
 ss.setdefault("run", None)        # dict(ctx, graph, cfg, state, pending)
@@ -77,7 +138,8 @@ ss.setdefault("sel_box", "orch")
 ss.setdefault("proc", dict(PROCESS_DEFAULTS))
 ss.setdefault("today_rules", [])   # rules from chat that hold for this plan day only, until the manager says "from now on"
 ss.setdefault("confirm_rule", None)
-ss.setdefault("pins", {})      # machines the manager pinned to an hour: {machine id: start hour}   # how each diagram box works; changed in the Control room
+ss.setdefault("pins", {})
+persist()      # machines the manager pinned to an hour: {machine id: start hour}   # how each diagram box works; changed in the Control room
 ss.setdefault("scale_mode", True)
 ss.setdefault("live_active", False)       # live mode: the last days of the file are held back and arrive one by one
 ss.setdefault("live_future", [])
@@ -214,6 +276,7 @@ weather, goal = ss.w_weather, ss.w_goal
 ss.provider = ss.w_provider or ss.provider
 ss.setdefault("llm_err", {"text": ""})   # this session's newest AI error
 LLM = LLMClient(ss.provider, api_key=ss.get(f"key_{ss.provider}") or None, error_sink=ss.llm_err)
+ss.llm_sig = (ss.provider, ss.get(f"key_{ss.provider}") or None)
 set_provider(ss.provider)
 ss.setdefault("models", {})          # the small and large model chosen for each provider
 ss.setdefault("model_lists", {})     # live model lists, asked of each provider with your key
@@ -447,7 +510,7 @@ def on_new_plan(st_: dict, pend: dict | None) -> None:
 
 # the first visit runs the plan on its own, so the whole flow is visible without a single click
 run_error = None
-if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and plan_date is not None:
+if (go_btn or ss.trigger_plan or not ss.autoran) and ss.hist is not None and plan_date is not None and ss.get("setup_done"):
     ss.autoran, ss.trigger_plan = True, False
     with st.spinner("Agents working: forecasting, reading the tariff, solving..."):
         try:
@@ -525,6 +588,7 @@ SETTINGS = [("Small AI model", "model llm small t1 groq claude grok key provider
             ("Remove names before AI", "privacy redact names data ai", "router"),
             ("Factory templates", "template foundry plastics textiles cold storage machines", "factory"),
             ("Rules learned from a no", "learned rule memory reject no remember", "memory"),
+            ("Memory: what the agent remembers", "memory forget remember sign in login plant correction library", "memory"),
             ("Next-day check", "verify real saving next day check learn", "loop_day"),
             ("Download the audit trail", "audit record download csv history", "store")]
 
@@ -553,10 +617,39 @@ def settings_search() -> None:
 
 
 # ------------------------------------------------------------------ the left menu
+def account_box() -> None:
+    """Sign in to a plant: its memory is kept on the server under the plant code."""
+    if ss.plant == MEM.DEMO:
+        with st.expander("Demo plant · sign in to keep your memory", icon=":material/login:"):
+            with st.form("signin", border=False):
+                code = st.text_input("Plant code", placeholder="e.g. pune-forge")
+                pin = st.text_input("PIN, 4 to 8 digits", type="password", max_chars=8)
+                name = st.text_input("Plant name (first sign-in only)", placeholder="e.g. Pune Forge, Unit 2")
+                if st.form_submit_button("Sign in", type="primary", icon=":material/login:", width="stretch"):
+                    try:
+                        token, created = STORE.sign_in(code, pin, name)
+                        switch_plant(MEM.clean_code(code), token)
+                        ss.signin_note = "New plant created. Its memory starts empty." if created else "Signed in. Memory loaded."
+                        st.rerun()
+                    except (ValueError, PermissionError) as e:
+                        st.error(str(e))
+            html("<div class='rh-note'>The demo plant is shared. A new plant code makes a new plant.</div>")
+    else:
+        c1, c2 = st.columns([3, 1.3], vertical_alignment="center")
+        c1.markdown(f"<div class='rh-note'><b>{escape(ss.plant_name)}</b><br>Signed in · memory saved</div>", unsafe_allow_html=True)
+        if c2.button("Sign out", key="signout", type="tertiary"):
+            STORE.sign_out(ss.get("token"))
+            switch_plant(MEM.DEMO, None)
+            st.rerun()
+    if ss.get("signin_note"):
+        st.toast(ss.pop("signin_note"))
+
+
 def sidebar() -> None:
     asking = bool(ss.run and ss.run.get("pending"))
     with st.sidebar:
         html(f"<div class='rh-brand'>{LOGO}<div><div class='n'>RightHour</div><div class='s'>Power bill planner</div></div></div>")
+        account_box()
         settings_search()
         with st.container(key="nav"):
             for name, icon, hint in NAV:
@@ -981,12 +1074,54 @@ def pane_router(rows) -> None:
 
 
 def pane_memory(rows) -> None:
-    rej = [r for r in ss.audit.rows() if r["action"] == "reject"]
-    saves = [r for r in ss.audit.rows() if r["action"] == "setup_saved"]
-    html(f"<div class='rh-kv three'><div><b>x{ss.bias:.3f}</b>learned forecast correction</div><div><b>{len(rej)}</b>rejected plans on record</div>"
-         f"<div><b>{len(saves)}</b>setup changes saved</div></div>")
-    if ss.bias != 1.0 and st.button("Forget the learned correction", icon=":material/restart_alt:", key="mem_reset"):
+    """Memory management: everything the agent remembers for this plant, where it came from, and a way to forget it."""
+    p, lrs = ss.plant, ss.cfg["machines"].get("learned_rules", [])
+    upd = STORE.updated(p) if p else {}
+    changed = [k for k, v in ss.proc.items() if PROCESS_DEFAULTS.get(k) != v]
+    floors = [k for k, v in ss.get("price_rules", PRICE_RULES).items() if PRICE_RULES.get(k) != v]
+    who = "Shared demo plant: anyone using the demo changes it." if p == MEM.DEMO else f"Saved for {escape(ss.plant_name)} (plant code {escape(p)})."
+    html(f"<div class='rh-note'>{ICONS['database']} {who} It loads in a new tab, after a refresh and on the next day.</div>")
+    items = [("Lasting rules", f"{len(lrs)}", "From a “no” or from chat, after you said “from now on”.", "cfg", "rules"),
+             ("Rules for this day only", f"{len(ss.today_rules)}", "Gone when you plan another day. Never saved.", None, "today"),
+             ("Forecast correction", f"x{ss.bias:.3f}", f"Learned from {len(ss.get('bias_history', []))} next-day check(s).", "bias", "bias"),
+             ("Tariff library", f"{len(ss.library)}", "Price orders you signed off. Read once, reused.", "library", "library"),
+             ("Agent settings changed", f"{len(changed)}", ", ".join(changed[:4]) or "All at the standard values.", "proc", "proc"),
+             ("Price-check floors changed", f"{len(floors)}", ", ".join(floors) or "All at the standard values.", "price_rules", "floors")]
+    html("<table class='rh-log'><thead><tr><th>What it remembers</th><th>Now</th><th>Where it came from</th><th>Saved</th></tr></thead><tbody>"
+         + "".join(f"<tr><td>{a}</td><td><b>{b}</b></td><td>{c}</td><td>{escape(upd.get(k, '')[:16].replace('T', ' ')) if k else '—'}</td></tr>"
+                   for a, b, c, k, _ in items) + "</tbody></table>")
+    bh = ss.get("bias_history", [])
+    if len(bh) > 1:
+        st.line_chart(pd.DataFrame(bh).set_index("ts")["bias"], height=120)
+    old_rules = [lr for lr in lrs if lr.get("ts") and (dt.datetime.now() - dt.datetime.strptime(lr["ts"][:10], "%Y-%m-%d")).days > ss.proc.get("rule_review_days", 90)]
+    if old_rules:
+        html(f"<div class='rh-note'>{ICONS['alert']} {len(old_rules)} rule(s) are older than {ss.proc.get('rule_review_days', 90)} days. Check they still hold, below.</div>")
+    if ss.today_rules:
+        names = {m["id"]: m["name"] for m in MACH["shiftable"]}
+        for i, lr in enumerate(ss.today_rules):
+            c1, c2 = st.columns([4, 1.4], vertical_alignment="center")
+            c1.markdown(f"<span class='rh-note'>Today only: <b>{escape(A.learned_rule_text(lr, names))}</b></span>", unsafe_allow_html=True)
+            if c2.button("Keep from now on", key=f"tr_keep_{i}", type="tertiary", icon=":material/bookmark_add:"):
+                ss.today_rules = [x for j, x in enumerate(ss.today_rules) if j != i]
+                _save_rule_quiet(lr)
+                st.rerun()
+    c = st.columns(4)
+    if c[0].button("Forget rules", key="mf_rules", icon=":material/delete:", width="stretch", disabled=not lrs):
+        save_cfg(learned_rules=[])
+        ss.audit.log("memory", "Plant manager", "forget", tier="human", mode="human", reason="forget all learned rules")
+        st.rerun()
+    if c[1].button("Forget correction", key="mf_bias", icon=":material/restart_alt:", width="stretch", disabled=ss.bias == 1.0):
         ss.bias = 1.0
+        ss.audit.log("memory", "Plant manager", "forget", tier="human", mode="human", reason="forecast correction reset to x1.000")
+        st.rerun()
+    if c[2].button("Forget library", key="mf_lib", icon=":material/delete:", width="stretch", disabled=not ss.library):
+        ss.library = {}
+        ss.audit.log("memory", "Plant manager", "forget", tier="human", mode="human", reason="tariff library cleared")
+        st.rerun()
+    if c[3].button("Forget everything", key="mf_all", icon=":material/delete_forever:", width="stretch"):
+        STORE.forget(p)
+        ss.audit.log("memory", "Plant manager", "forget", tier="human", mode="human", reason="all memory for this plant cleared")
+        ss.loaded_for = None
         st.rerun()
 
 
@@ -1124,6 +1259,7 @@ LIMITS = [
     ("forecast", "use_learning", "Use the learned correction", "toggle", None, "Off: a plain average of past days."),
     ("loop_day", "learn_rate", "How fast it learns from a checked day", "slider", (0.1, 1.0, 0.1, "%.1f"), "1.0 moves all the way to what happened."),
     ("loop_day", "learn_step_max", "Biggest change in one day (%)", "pct", (1, 30, 1), "Caps how far one day can move the forecast."),
+    ("memory", "rule_review_days", "Ask to check a rule after (days)", "slider", (7, 365, 1, "%d"), "Old rules are flagged so they do not go stale."),
     ("loop_day", "learn_outlier", "Ignore days off by more than (%)", "pct", (10, 100, 5), "Such a day is treated as odd and not learned from."),
     ("opt", "time_limit_s", "Time the solver may take (seconds)", "slider", (5, 120, 5, "%d"), "This plant solves in under a second."),
     ("router", "small_tries", "Small-model tries before the large model", "slider", (1, 3, 1, "%d"), "After this many failed checks, the large model takes over."),
@@ -1467,8 +1603,14 @@ def learned_rules_editor() -> None:
         return
     for i, lr in enumerate(lrs):
         c1, c2 = st.columns([5, 1], vertical_alignment="center")
+        try:
+            age = (dt.datetime.now() - dt.datetime.strptime(str(lr.get("ts", ""))[:10], "%Y-%m-%d")).days
+        except ValueError:
+            age = None
+        due = age is not None and age > ss.proc.get("rule_review_days", 90)
         c1.markdown(f"<div class='rh-lockgrid' style='grid-template-columns:1fr;margin:0'><div>{ICONS['bookmark'] if 'bookmark' in ICONS else ICONS['lock']}"
-                    f"<span><b>{escape(A.learned_rule_text(lr, names))}</b><br><span class='rh-note'>{escape(str(lr.get('reason') or ''))} · {escape(str(lr.get('ts', '')))}</span></span></div></div>",
+                    f"<span><b>{escape(A.learned_rule_text(lr, names))}</b><br><span class='rh-note'>{escape(str(lr.get('reason') or ''))} · {escape(str(lr.get('ts', '')))}"
+                    f"{' · ' + str(age) + ' days old' if age is not None else ''}{' · <b>check it still holds</b>' if due else ''}</span></span></div></div>",
                     unsafe_allow_html=True)
         if c2.button("Remove", key=f"lr_rm_{i}", type="tertiary", icon=":material/delete:"):
             save_cfg(learned_rules=[x for j, x in enumerate(lrs) if j != i])
@@ -1484,7 +1626,7 @@ CONTROLS = {"meters": lambda: (meter_controls("cr"), box_limits("meters", cols=1
             "collect": ctl_day, "orch": ctl_day, "check": lambda: box_limits("check"), "store": ctl_store,
             "forecast": lambda: (box_limits("forecast"), ctl_bias()), "opt": lambda: box_limits("opt", cols=1),
             "guard": lambda: (box_limits("guard"), ctl_locked()), "router": lambda: (box_limits("router", cols=1), pane_router([])), "manager": ctl_manager, "runs": ctl_runs,
-            "loop_no": lambda: learned_rules_editor(), "memory": lambda: (pane_memory([]), learned_rules_editor()),
+            "loop_no": lambda: learned_rules_editor(), "memory": lambda: (pane_memory([]), learned_rules_editor(), box_limits("memory", cols=1)),
             "loop_day": lambda: (box_limits("loop_day", cols=3), pane_loop_day([]))}
 PANES = CONTROLS
 
@@ -1828,12 +1970,20 @@ def template_picker() -> None:
                 save_cfg(shiftable=machines, rules=[r for r in ss.cfg["machines"]["rules"] if r["type"] == "contract_demand"], learned_rules=[])
 
 
+def validate_tariff_errors(t: dict) -> list[str]:
+    try:
+        return [i.text for i in validate_tariff(t) if i.level == "error"]
+    except Exception as e:  # noqa: BLE001  a malformed entry is an error, not a crash
+        return [str(e)]
+
+
 def settings_io() -> None:
     """Settings live in this browser session and in a file on the server, which a restart clears. Download them to keep them."""
     with st.container(border=True):
         card_title("database", "Keep your settings", "The hosted app forgets them when it restarts. Download them, and load them back any time.")
         blob = json.dumps({"cfg": ss.cfg, "process": {k: v for k, v in ss.proc.items()}, "price_rules": ss.get("price_rules", PRICE_RULES),
-                           "notes": ss.notes_rows}, default=str, indent=1).encode()
+                           "notes": ss.notes_rows, "bias": ss.bias, "bias_history": ss.get("bias_history", []), "library": ss.library},
+                          default=str, indent=1).encode()
         c1, c2 = st.columns(2)
         c1.download_button("Download my settings", blob, "righthour_settings.json", "application/json", icon=":material/download:", width="stretch")
         up = c2.file_uploader("Load settings", type=["json"], key="set_up", label_visibility="collapsed")
@@ -1858,6 +2008,10 @@ def settings_io() -> None:
                 ss.proc = {**PROCESS_DEFAULTS, **d.get("process", {})}
                 ss.price_rules = {**PRICE_RULES, **d.get("price_rules", {})}
                 ss.notes_rows, ss.notes_ver = d.get("notes", ss.notes_rows), ss.notes_ver + 1
+                b = d.get("bias", ss.bias)
+                ss.bias = float(b) if isinstance(b, (int, float)) and 0.5 <= b <= 2.0 else ss.bias
+                ss.bias_history = [h for h in d.get("bias_history", []) if isinstance(h, dict) and isinstance(h.get("bias"), (int, float))][-200:]
+                ss.library = {str(k): v for k, v in d.get("library", {}).items() if isinstance(v, dict) and not validate_tariff_errors(v)}
                 CFG.save(ss.cfg)
                 ss.cfg_version += 1
                 ss.trigger_plan = True
@@ -2488,7 +2642,7 @@ def ask_answer(q: str) -> str:
             text, tin, tout = LLM.complete(model, sysmsg, f"{history}manager: {q}", 700)
         except Exception as e:  # noqa: BLE001
             return f"The AI model did not answer ({e}). Here is what plain code can tell you:\n\n" + ASK.offline_answer(q, f)
-        bad = number_guard(text.replace(":", " "), allowed)
+        bad = number_guard(text.replace(":", " "), allowed) + (["the answer is cut short"] if len(text.strip()) < 20 else [])
         ss.audit.log(ctx.run_id if ctx else "ask", "Ask RightHour", "answer_question", tier="T2", model=model, mode=LLM.mode,
                      reason="free-form question: large model", tokens_in=tin, tokens_out=tout,
                      cost_usd=cost_usd(model, tin, tout), detail={"question": q, "attempt": attempt, "number_guard": bad or "passed"})
@@ -2529,10 +2683,32 @@ def ask_dialog() -> None:
         st.rerun(scope="fragment")
 
 
+def _setup_done() -> None:
+    ss.setup_done = True
+
+
+@st.dialog("Set up the AI model", width="medium", icon=":material/settings:", on_dismiss=_setup_done)
+def setup_dialog() -> None:
+    """Shown each time the app opens, so the model and its connection are sorted before the first plan."""
+    html("<div class='rh-note'>Pick a provider, check the models, and press <b>Test connection</b>. "
+         "Without a model the app still plans: plain code writes the text. Numbers never come from a model.</div>")
+    model_controls()
+    if (ss.w_provider or ss.provider, ss.get(f"key_{ss.w_provider or ss.provider}") or None) != ss.llm_sig:
+        st.rerun()                            # provider or key changed: rebuild the AI client, and this window opens again
+    ok = str(ss.get("model_ok", "")).startswith("Connected") or ss.provider == "Offline"
+    if st.button("Start planning" if ok else "Continue without testing", type="primary" if ok else "secondary",
+                 icon=":material/play_arrow:", width="stretch", key="setup_go"):
+        ss.setup_done = True
+        st.rerun()
+
+
 # ------------------------------------------------------------------ draw
+if not ss.get("setup_done"):
+    setup_dialog()
 sidebar()
 with st.container(key="askfab"):
     if st.button("Ask RightHour", icon=":material/forum:", type="primary", key="ask_open"):
         ask_dialog()
 {"Today": page_today, "Guardrails": page_guardrails, "Upload data": page_data, "Plant setup": page_setup, "Control room": page_control_room,
  "Next-day check": page_check, "History": page_history}[ss.view]()
+persist()

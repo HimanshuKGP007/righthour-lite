@@ -325,7 +325,7 @@ PROCESS_DEFAULTS = {"weeks": 4, "method": "weekday", "use_learning": True, "sola
                     "margin_pct": 0, "block_new_peak": False, "max_moves": None, "min_saving_rs": 0,
                     # learning from the next-day check, the data needed to plan, AI retries, the live feed
                     "learn_rate": 0.5, "learn_step_max": 0.10, "learn_outlier": 0.5, "min_history_days": 14, "small_tries": 2,
-                    "live_hold_days": 7, "redact_names": True}
+                    "live_hold_days": 7, "redact_names": True, "rule_review_days": 90}
 GUARD_KEYS = ("margin_pct", "block_new_peak", "max_moves", "min_saving_rs")
 
 
@@ -502,6 +502,8 @@ def explain(ctx: Context, st: dict) -> str:
             except Exception:  # noqa: BLE001
                 break
             bad = number_guard(out.replace(":", " "), allowed)
+            if len(out.strip()) < 60 or (sav and rs(sav)[1:].replace(",", "") not in out.replace(",", "")):
+                bad = bad + ["the text is cut short or leaves out the saving"]
             ctx.log(st["steps"], "Orchestrator", "explain", tier=rr.tier, model=rr.model, mode="live API",
                     reason=rr.reason, tokens=(tin, tout), detail={"number_guard": bad or "passed"})
             if not bad:

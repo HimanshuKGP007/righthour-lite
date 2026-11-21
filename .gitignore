@@ -6,3 +6,7 @@ __pycache__/
 # secrets: never upload
 .streamlit/secrets.toml
 .env
+
+# plant memory and per-plant audit trails: live data, never upload
+righthour_memory.sqlite
+plant_audit/

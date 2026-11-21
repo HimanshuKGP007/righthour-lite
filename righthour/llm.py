@@ -79,9 +79,11 @@ class LLMClient:
         if not self.live:
             raise RuntimeError("offline")
         if self.provider in CHAT_URL:
-            d = self._post(CHAT_URL[self.provider], self._auth(),
-                           {"model": model, "max_tokens": max_tokens, "temperature": 0,
-                            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}]})
+            body = {"model": model, "max_tokens": max_tokens, "temperature": 0,
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}]}
+            if re.search(r"gpt-oss|qwen3|reason", model.lower()):     # thinking models: think briefly, and leave room for the answer
+                body.update(max_tokens=max_tokens + 1500, reasoning_effort="low")
+            d = self._post(CHAT_URL[self.provider], self._auth(), body)
             u = d.get("usage", {})
             return d["choices"][0]["message"]["content"] or "", u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
         d = self._post(CLAUDE_URL, self._auth(),
@@ -126,6 +128,8 @@ def suggest_models(provider: str, ids: list[str]) -> tuple[str, str]:
         hk = [i for i in ids if "haiku" in i]
         sn = [i for i in ids if "sonnet" in i]
         return (sorted(hk)[-1] if hk else ranked[0], sorted(sn)[-1] if sn else ranked[-1])
-    prefer = [i for i in ids if "preview" not in i.lower() and "deprecated" not in i.lower()] or ids
+    skip = r"preview|deprecated|whisper|guard|tts|playai|orpheus|allam|embed|distil|audio|vision"   # not general chat models
+    prefer = [i for i in ids if not re.search(skip, i.lower())] or ids
     pr = sorted(prefer, key=lambda i: (size(i), i))
-    return pr[0], pr[-1]
+    known = [i for i in pr if re.search(r"instant|gpt-oss|llama|qwen|gemma|mixtral|kimi|grok|mistral", i.lower())] or pr
+    return known[0], known[-1]

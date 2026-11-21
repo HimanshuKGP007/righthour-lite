@@ -225,7 +225,7 @@ def test_claude_client_and_router_switch(monkeypatch):
     router.set_provider("Claude")
     assert router.route("explain").model == "claude-haiku-5-5"
     router.set_provider("Groq")
-    assert router.route("explain").model == "llama-3.1-8b-instant"
+    assert router.route("explain").model == "openai/gpt-oss-20b"
 
 
 def test_every_logged_step_links_to_a_diagram_box():
