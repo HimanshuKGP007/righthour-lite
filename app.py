@@ -109,7 +109,7 @@ def save_plant_file(cfg: dict) -> None:
 def switch_plant(code: str, token: str | None) -> None:
     """A new plant signs in, or the manager signs out: start clean, keep only typed AI keys."""
     for k in list(ss.keys()):
-        if not (str(k).startswith(("key_", "m_T")) or k in ("setup_done", "w_provider", "models", "model_ok")):
+        if not (str(k).startswith(("key_", "m_T")) or k in ("setup_done", "setup_checked", "w_provider", "models", "model_ok")):
             del ss[k]
     ss.plant, ss.token = code, token
 
@@ -278,6 +278,14 @@ ss.provider = ss.w_provider or ss.provider
 ss.setdefault("llm_err", {"text": ""})   # this session's newest AI error
 LLM = LLMClient(ss.provider, api_key=ss.get(f"key_{ss.provider}") or None, error_sink=ss.llm_err)
 ss.llm_sig = (ss.provider, ss.get(f"key_{ss.provider}") or None)
+if not ss.get("setup_done") and not ss.get("setup_checked"):   # on open: if the model answers, skip the setup window
+    ss.setup_checked = True
+    if LLM.live:
+        try:
+            LLM.complete(MODELS[ss.provider]["T1"], "Reply with the single word OK.", "ping", 8)
+            ss.setup_done, ss.model_ok = True, f"Connected. {MODELS[ss.provider]['T1']} answered."
+        except Exception as e:  # noqa: BLE001  the window opens and shows what failed
+            ss.model_ok = f"Failed: {e}"
 set_provider(ss.provider)
 ss.setdefault("models", {})          # the small and large model chosen for each provider
 ss.setdefault("model_lists", {})     # live model lists, asked of each provider with your key
@@ -1711,6 +1719,35 @@ def work_order_csv(st_: dict) -> bytes:
     return pd.DataFrame(rows).to_csv(index=False).encode()
 
 
+def plan_editor(scope: str, record) -> None:
+    """Set start times or keep machines; plan again around them, or approve exactly as edited."""
+    rid = ctx.run_id
+    html("<div class='rh-note'>Set a start time, and tick <b>Keep</b> for any machine that must not change. "
+         "<b>Update plan</b> plans again around what you kept. Your note and changes are saved in the audit trail.</div>")
+    sched = state["plan"]["schedule"]
+    rows_ = [{"Machine": m["name"], "Usual": "new" if m.get("baseline_start_h") is None else f"{m['baseline_start_h']:02d}:00",
+              "Start": f"{(ss.pins.get(m['id'], sched[m['id']])):02d}:00", "Keep": m["id"] in ss.pins} for m in state["problem"]["shiftable"]]
+    hours = [f"{h:02d}:00" for h in range(24)]
+    ed = st.data_editor(pd.DataFrame(rows_), hide_index=True, width="stretch", key=f"pin_{scope}_{rid}", disabled=["Machine", "Usual"],
+                        column_config={"Start": st.column_config.SelectboxColumn("Start", options=hours, required=True),
+                                       "Keep": st.column_config.CheckboxColumn("Keep", help="This machine must start at this time.")})
+    ids = [m["id"] for m in state["problem"]["shiftable"]]
+    starts = {i: int(r["Start"][:2]) for i, r in zip(ids, ed.to_dict("records"))}
+    keep = {i: starts[i] for i, r in zip(ids, ed.to_dict("records")) if r["Keep"]}
+    c1, c2 = st.columns(2)
+    if c1.button("Update plan", type="primary", icon=":material/refresh:", width="stretch", key=f"update_{scope}",
+                 help="Plan again. Machines you kept stay at their time; the agent moves the rest."):
+        ss.pins = keep
+        record("plan_update", {"kept": {m: f"{h:02d}:00" for m, h in keep.items()}})
+        ss.trigger_plan = True
+        st.rerun()
+    if c2.button("Approve exactly as edited", icon=":material/task_alt:", width="stretch", key=f"editgo_{scope}",
+                 help="Use these start times as they are. The rule check runs first."):
+        record("plan_edit", {"schedule": {m: f"{h:02d}:00" for m, h in starts.items()}})
+        do_resume({"action": "edit", "schedule": starts})
+        st.rerun()
+
+
 def approval_controls(scope: str) -> None:
     """Approve, reject or change the plan. Every choice, with the manager's note, goes to the audit trail."""
     rid = ctx.run_id
@@ -1727,31 +1764,8 @@ def approval_controls(scope: str) -> None:
     if b2.button("Reject", icon=":material/close:", width="stretch", key=f"reject_{scope}"):
         do_resume({"action": "reject", "reason": note.strip() or "no reason given"})
         st.rerun()
-    with st.expander("Change the plan", icon=":material/edit_calendar:", expanded=bool(ss.get("open_change"))):
-        html("<div class='rh-note'>Set a start time, and tick <b>Keep</b> for any machine that must not change. "
-             "<b>Update plan</b> plans again around what you kept. Your note and changes are saved in the audit trail.</div>")
-        sched = state["plan"]["schedule"]
-        rows_ = [{"Machine": m["name"], "Usual": "new" if m.get("baseline_start_h") is None else f"{m['baseline_start_h']:02d}:00",
-                  "Start": f"{(ss.pins.get(m['id'], sched[m['id']])):02d}:00", "Keep": m["id"] in ss.pins} for m in state["problem"]["shiftable"]]
-        hours = [f"{h:02d}:00" for h in range(24)]
-        ed = st.data_editor(pd.DataFrame(rows_), hide_index=True, width="stretch", key=f"pin_{scope}_{rid}", disabled=["Machine", "Usual"],
-                            column_config={"Start": st.column_config.SelectboxColumn("Start", options=hours, required=True),
-                                           "Keep": st.column_config.CheckboxColumn("Keep", help="This machine must start at this time.")})
-        ids = [m["id"] for m in state["problem"]["shiftable"]]
-        starts = {i: int(r["Start"][:2]) for i, r in zip(ids, ed.to_dict("records"))}
-        keep = {i: starts[i] for i, r in zip(ids, ed.to_dict("records")) if r["Keep"]}
-        c1, c2 = st.columns(2)
-        if c1.button("Update plan", type="primary", icon=":material/refresh:", width="stretch", key=f"update_{scope}",
-                     help="Plan again. Machines you kept stay at their time; the agent moves the rest."):
-            ss.pins = keep
-            record("plan_update", {"kept": {m: f"{h:02d}:00" for m, h in keep.items()}})
-            ss.trigger_plan = True
-            st.rerun()
-        if c2.button("Approve exactly as edited", icon=":material/task_alt:", width="stretch", key=f"editgo_{scope}",
-                     help="Use these start times as they are. The rule check runs first."):
-            record("plan_edit", {"schedule": {m: f"{h:02d}:00" for m, h in starts.items()}})
-            do_resume({"action": "edit", "schedule": starts})
-            st.rerun()
+    with st.expander("Change the plan", icon=":material/edit_calendar:", expanded=False):
+        plan_editor(scope, record)
     if ss.pins:
         names = {m["id"]: m["name"] for m in state["problem"]["shiftable"]}
         html("<div class='rh-note' style='margin-top:6px'><b>Kept by you:</b> " + ", ".join(f"{escape(names.get(k, k))} at {h:02d}:00" for k, h in ss.pins.items()) + "</div>")
@@ -2064,17 +2078,31 @@ def morning_brief() -> None:
                 ss.audit.log(ctx.run_id, "Plant manager", "approve", tier="human", mode="human", reason="approved from the morning brief")
                 do_resume({"action": "approve"})
                 st.rerun()
-            if b2.button("Edit", icon=":material/edit_calendar:", width="stretch", key="br_edit", help="Change start times or keep machines where they are."):
-                ss.open_change = True
+            if b2.button("Close edit" if ss.get("open_change") else "Edit", icon=":material/edit_calendar:", width="stretch", key="br_edit",
+                         help="Change start times or keep machines where they are.", type="secondary"):
+                ss.open_change, ss.show_why = not ss.get("open_change"), False
                 st.rerun()
             if b3.button("Reject", icon=":material/close:", width="stretch", key="br_no"):
                 ss.rejecting = True
                 st.rerun()
-            if b4.button("Ask why", icon=":material/help:", width="stretch", key="br_why"):
-                for m, h in mv:
-                    say("manager", f"Why move the {m['name'].split(' (')[0].lower()} to {_ampm(h)}?")
-                    say("agent", A.why_moved(state["problem"], m, h))
+            if b4.button("Hide why" if ss.get("show_why") else "Ask why", icon=":material/help:", width="stretch", key="br_why"):
+                ss.show_why, ss.open_change = not ss.get("show_why"), False
                 st.rerun()
+    if pending and pending.get("type") == "approval" and ss.get("show_why"):
+        with st.container(border=True, key="why_box"):
+            card_title("chip", "Why this plan", "One answer, from the prices and each machine's hours")
+            parts = [f"<li><b>{escape(m['name'])}</b>, {_ampm(m['baseline_start_h']) + ' → ' if m.get('baseline_start_h') is not None else 'new, at '}{_ampm(h)}: {escape(A.why_moved(state['problem'], m, h))}</li>" for m, h in mv]
+            kept = [m["name"] for m in state["problem"]["shiftable"] if m["id"] not in {x["id"] for x, _ in mv}]
+            html("<ul class='rh-why'>" + "".join(parts) + "</ul>"
+                 + (f"<div class='rh-note'>Kept at their usual time: {escape(', '.join(kept))}. No cheaper hour fits their rules.</div>" if kept else "")
+                 + (f"<div class='rh-note' style='margin-top:6px'>{escape(state.get('explanation') or '')}</div>" if state.get("explanation") else ""))
+    if pending and pending.get("type") == "approval" and ss.get("open_change"):
+        with st.container(border=True, key="edit_box"):
+            card_title("clock", "Edit the plan", "Saved in the audit trail")
+
+            def _rec(action: str, detail: dict | None = None) -> None:
+                ss.audit.log(ctx.run_id, "Plant manager", action, tier="human", mode="human", reason="edited from the plan box", detail=detail or {})
+            plan_editor("brief", _rec)
 
 
 # ---- the manager types anything; the agent works out what it means and acts (deck: the four moments)
@@ -2755,19 +2783,32 @@ ss.setdefault("chat", [])
 
 @st.dialog("Ask RightHour", width="small")
 def ask_dialog() -> None:
-    html(f"<div class='rh-note' style='margin-top:-8px'>{'Large model: ' + escape(MODELS[ss.provider]['T2']) if LLM.live else 'Offline: answers status, savings and history.'}</div>")
+    big = bool(ss.get("ask_big"))
+    if big:                                       # full screen: the corner panel grows to fill the window
+        html("<style>[data-testid='stDialog'] > div{left:24px !important;right:24px !important;top:24px !important;bottom:24px !important;"
+             "width:auto !important;max-height:none !important;}</style>")
+    c1, c2 = st.columns([5, 1.4], vertical_alignment="center")
+    c1.markdown(f"<div class='rh-note'>{'Large model: ' + escape(MODELS[ss.provider]['T2']) if LLM.live else 'Offline: answers status, savings and history.'}</div>",
+                unsafe_allow_html=True)
+    if c2.button("Smaller" if big else "Full screen", key="ask_big_btn", type="tertiary",
+                 icon=":material/close_fullscreen:" if big else ":material/open_in_full:"):
+        ss.ask_big = not big
+        st.rerun(scope="fragment")
     q = None
+    sugg = st.empty()                             # suggestions only before the conversation starts
     if not ss.chat:
-        for i, sug in enumerate(ASK.SUGGESTIONS):
-            if st.button(sug, key=f"sug_{i}", width="stretch", type="secondary"):
-                q = sug
-    log = st.container(height=120 if not ss.chat else 300, border=False, key="chatlog")
+        with sugg.container():
+            for i, sug in enumerate(ASK.SUGGESTIONS):
+                if st.button(sug, key=f"sug_{i}", width="stretch", type="secondary"):
+                    q = sug
+    log = st.container(height=(560 if big else 300) if ss.chat else 120, border=False, key="chatlog")
     with log:
         for m in ss.chat:
             with st.chat_message("user" if m["role"] == "manager" else "assistant", avatar=":material/person:" if m["role"] == "manager" else ":material/bolt:"):
                 st.markdown(m["text"])
     q = st.chat_input("Ask about the plan, savings, history...", key="ask_in") or q
     if q:
+        sugg.empty()
         with log:
             with st.chat_message("user", avatar=":material/person:"):
                 st.markdown(q)
